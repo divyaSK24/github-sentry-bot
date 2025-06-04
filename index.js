@@ -5,24 +5,48 @@ const simpleGit = require('simple-git');
 const { Octokit } = require('@octokit/rest');
 const fs = require('fs');
 const path = require('path');
+const OpenAI = require('openai');
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(bodyParser.json());
 
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 // Helper to parse Sentry details from issue body
-function parseSentryDetails(body) {
-  // Example: extract file, line, and error message from a typical Sentry stack trace
-  // This is a simple regex and may need adjustment for your real Sentry format
-  const fileMatch = body.match(/File:\s*(.*)/);
-  const lineMatch = body.match(/Line:\s*(\d+)/);
-  const errorMatch = body.match(/Error:\s*([\s\S]*)/);
-  return {
-    file: fileMatch ? fileMatch[1].trim() : null,
-    line: lineMatch ? parseInt(lineMatch[1], 10) : null,
-    error: errorMatch ? errorMatch[1].trim() : null,
-  };
+function parseSentryDetails(sentryEvent) {
+  // Sentry event JSON: extract from exception.values[0].stacktrace.frames (last frame is where error occurred)
+  try {
+    const exception = sentryEvent.exception?.values?.[0];
+    const frames = exception?.stacktrace?.frames;
+    const lastFrame = frames && frames.length > 0 ? frames[frames.length - 1] : null;
+    return {
+      file: lastFrame?.filename || null,
+      line: lastFrame?.lineno || null,
+      error: exception?.value || sentryEvent.message || null,
+    };
+  } catch (e) {
+    return { file: null, line: null, error: null };
+  }
+}
+
+function extractSentryEventUrl(issueBody) {
+  const match = issueBody.match(/Sentry Event:\s*(https?:\/\/[^\s/]+\/api\/0\/projects\/[^\s]+\/events\/[^\s/]+)\/?/i);
+  return match ? match[1] : null;
+}
+
+async function fetchSentryEventJson(sentryUrl) {
+  const response = await fetch(sentryUrl, {
+    headers: {
+      'Authorization': `Bearer ${process.env.SENTRY_API_TOKEN}`
+    }
+  });
+  if (!response.ok) throw new Error('Failed to fetch Sentry event JSON');
+  return await response.json();
 }
 
 app.post('/webhook', async (req, res) => {
@@ -33,7 +57,19 @@ app.post('/webhook', async (req, res) => {
     const labels = issue.labels.map(label => label.name);
     if (labels.includes('sentry error')) {
       console.log('Received new Sentry error issue:', issue.title);
-      const sentryDetails = parseSentryDetails(issue.body);
+      const sentryUrl = extractSentryEventUrl(issue.body);
+      if (!sentryUrl) {
+        console.error('No Sentry event URL found in issue body');
+        return res.status(400).send('No Sentry event URL found in issue body');
+      }
+      let sentryEvent;
+      try {
+        sentryEvent = await fetchSentryEventJson(sentryUrl);
+      } catch (e) {
+        console.error('Could not fetch Sentry event JSON:', e);
+        return res.status(400).send('Could not fetch Sentry event JSON');
+      }
+      const sentryDetails = parseSentryDetails(sentryEvent);
       const repoOwner = repo.owner.login;
       const repoName = repo.name;
       const repoUrl = repo.clone_url;
@@ -41,6 +77,7 @@ app.post('/webhook', async (req, res) => {
       const localPath = path.join(__dirname, 'tmp', `${repoOwner}-${repoName}-${Date.now()}`);
       const git = simpleGit();
       const remoteWithToken = repoUrl.replace('https://', `https://${process.env.GITHUB_TOKEN}@`);
+      let aiFix;
       try {
         // Clone the repo with authentication
         await git.clone(remoteWithToken, localPath);
@@ -70,6 +107,30 @@ app.post('/webhook', async (req, res) => {
         console.log('PR created successfully');
       } catch (err) {
         console.error('Error handling Sentry fix:', err);
+      }
+
+      try {
+        const response = await openai.createChatCompletion({
+          model: 'gpt-4',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 500,
+        });
+        aiFix = response.data.choices[0].message.content.trim();
+      } catch (err) {
+        console.error('OpenAI API error:', err);
+        aiFix = null;
+      }
+
+      if (!aiFix || aiFix.length < 5) {
+        // Fallback: Add a comment to the GitHub issue for manual intervention
+        await octokit.issues.createComment({
+          owner: repoOwner,
+          repo: repoName,
+          issue_number: issue.number,
+          body: `:warning: The bot could not automatically fix the Sentry error. Manual intervention is required.\n\nError: ${sentryDetails.error}`
+        });
+        console.log('AI fix failed, added comment to issue for manual intervention.');
+        return res.status(200).send('OK');
       }
     }
   }
