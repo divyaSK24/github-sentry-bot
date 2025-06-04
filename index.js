@@ -6,7 +6,6 @@ const { Octokit } = require('@octokit/rest');
 const fs = require('fs');
 const path = require('path');
 const OpenAI = require('openai');
-const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
