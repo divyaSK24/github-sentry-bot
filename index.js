@@ -254,12 +254,12 @@ app.post('/webhook', async (req, res) => {
               fileContent = '[Could not read file]';
             }
             const prompt = `A Sentry error was reported in the following file and line.\n\nFile: ${sentryDetails.file}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent}\n\nSuggest a fix for the error, and provide the corrected code for the relevant section.`;
-            const response = await openai.createChatCompletion({
+            const response = await openai.chat.completions.create({
               model: 'gpt-4',
               messages: [{ role: 'user', content: prompt }],
               max_tokens: 500,
             });
-            aiFix = response.data.choices[0].message.content.trim();
+            aiFix = response.choices[0].message.content.trim();
           } catch (err) {
             console.error('OpenAI API error:', err);
             aiFix = null;
