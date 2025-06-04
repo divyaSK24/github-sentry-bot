@@ -115,12 +115,20 @@ app.post('/webhook', async (req, res) => {
   (async () => {
     try {
       const event = req.headers['x-github-event'];
-      if (event === 'issues' && req.body.action === 'labeled') {
+      // Accept 'labeled', 'opened', and 'edited' actions
+      if (event === 'issues' && ['labeled', 'opened', 'edited'].includes(req.body.action)) {
         const issue = req.body.issue;
         const repo = req.body.repository;
-        const labelName = req.body.label?.name;
-        console.log('Label added:', labelName);
-        if (labelName && labelName.toLowerCase() === 'sentry error') {
+        let hasSentryErrorLabel = false;
+        if (req.body.action === 'labeled') {
+          const labelName = req.body.label?.name;
+          hasSentryErrorLabel = labelName && labelName.toLowerCase() === 'sentry error';
+        } else {
+          // For 'opened' and 'edited', check all labels
+          hasSentryErrorLabel = Array.isArray(issue.labels) && issue.labels.some(l => l.name && l.name.toLowerCase() === 'sentry error');
+        }
+        console.log('Sentry error label present:', hasSentryErrorLabel);
+        if (hasSentryErrorLabel) {
           console.log('Processing issue because "sentry error" label was added:', issue.title);
           const sentryUrl = extractSentryEventUrl(issue.body);
           if (!sentryUrl) {
