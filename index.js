@@ -34,8 +34,10 @@ function parseSentryDetails(sentryEvent) {
 }
 
 function extractSentryEventUrl(issueBody) {
-  // If the body is an object, search all string values for a Sentry event URL
   if (typeof issueBody === 'object' && issueBody !== null) {
+    if (typeof issueBody.sentryUrl === 'string') {
+      return issueBody.sentryUrl.replace(/\/$/, '');
+    }
     for (const key in issueBody) {
       if (typeof issueBody[key] === 'string') {
         const url = extractSentryEventUrl(issueBody[key]);
@@ -44,27 +46,31 @@ function extractSentryEventUrl(issueBody) {
     }
     return null;
   }
-  // If the body is a string, search for any Sentry event API URL
   if (typeof issueBody === 'string') {
-    // This regex matches any Sentry event API URL
-    const urlMatch = issueBody.match(/https?:\/\/[^\s]+sentry\.io\/api\/0\/projects\/[^\s]+\/events\/[a-z0-9]+\/json/i);
+    // Match any Sentry event API URL, regardless of label, case, or Markdown
+    const urlMatch = issueBody.match(/https?:\/\/[^\s]+sentry\.io\/api\/0\/projects\/[^\s]+\/events\/[a-z0-9]+\/?/i);
     if (urlMatch) {
       return urlMatch[0].replace(/\/$/, '');
+    } else {
+      console.error('No Sentry event URL found in issue body:', issueBody);
     }
   }
   return null;
 }
 
 async function fetchSentryEventJson(sentryUrl) {
-  let url = sentryUrl.replace(/\/$/, ''); // Remove trailing slash
+  let url = sentryUrl.replace(/\/$/, '');
   let response = await fetch(url, {
     headers: {
       'Authorization': `Bearer ${process.env.SENTRY_API_TOKEN}`
     }
   });
 
-  // If the first fetch fails and the URL does not end with /json, try appending /json
   if (!response.ok && !url.endsWith('/json')) {
+    console.error(`First fetch failed: ${response.status} ${response.statusText}`);
+    const text = await response.text();
+    console.error('Response body:', text);
+
     url = url + '/json';
     response = await fetch(url, {
       headers: {
@@ -73,7 +79,12 @@ async function fetchSentryEventJson(sentryUrl) {
     });
   }
 
-  if (!response.ok) throw new Error('Failed to fetch Sentry event JSON');
+  if (!response.ok) {
+    console.error(`Second fetch failed: ${response.status} ${response.statusText}`);
+    const text = await response.text();
+    console.error('Response body:', text);
+    throw new Error('Failed to fetch Sentry event JSON');
+  }
   return await response.json();
 }
 
