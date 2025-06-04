@@ -36,7 +36,9 @@ function parseSentryDetails(sentryEvent) {
 function extractSentryEventUrl(issueBody) {
   if (typeof issueBody === 'object' && issueBody !== null) {
     if (typeof issueBody.sentryUrl === 'string') {
-      return issueBody.sentryUrl.replace(/\/$/, '');
+      const cleanUrl = issueBody.sentryUrl.replace(/["'\s]+$/g, '').replace(/\/?$/, '/');
+      console.log('Extracted Sentry event URL:', cleanUrl);
+      return cleanUrl;
     }
     for (const key in issueBody) {
       if (typeof issueBody[key] === 'string') {
@@ -47,10 +49,11 @@ function extractSentryEventUrl(issueBody) {
     return null;
   }
   if (typeof issueBody === 'string') {
-    // Match any Sentry event API URL, regardless of label, case, or Markdown
-    const urlMatch = issueBody.match(/https?:\/\/[^\s]+sentry\.io\/api\/0\/projects\/[^\s]+\/events\/[a-z0-9]+\/?/i);
+    const urlMatch = issueBody.match(/https?:\/\/[^\s"']+sentry\.io\/api\/0\/projects\/[^\s"']+\/events\/[a-z0-9]+\/?/i);
     if (urlMatch) {
-      return urlMatch[0].replace(/\/$/, '');
+      const cleanUrl = urlMatch[0].replace(/["'\s]+$/g, '').replace(/\/?$/, '/');
+      console.log('Extracted Sentry event URL:', cleanUrl);
+      return cleanUrl;
     } else {
       console.error('No Sentry event URL found in issue body:', issueBody);
     }
@@ -89,6 +92,12 @@ async function fetchSentryEventJson(sentryUrl) {
 }
 
 app.post('/webhook', async (req, res) => {
+  console.log('Webhook received:', {
+    event: req.headers['x-github-event'],
+    action: req.body.action,
+    issueTitle: req.body.issue?.title,
+    issueNumber: req.body.issue?.number
+  });
   res.status(200).send('OK'); // Respond immediately to GitHub
 
   // Process the event in the background
@@ -99,21 +108,25 @@ app.post('/webhook', async (req, res) => {
         const issue = req.body.issue;
         const repo = req.body.repository;
         const labels = issue.labels.map(label => label.name);
+        console.log('Issue labels:', labels);
         if (labels.includes('sentry error')) {
-          console.log('Received new Sentry error issue:', issue.title);
+          console.log('Sentry error label found. Processing issue:', issue.title);
           const sentryUrl = extractSentryEventUrl(issue.body);
           if (!sentryUrl) {
-            console.error('No Sentry event URL found in issue body');
+            console.error('No Sentry event URL found in issue body:', issue.body);
             return;
           }
+          console.log('Attempting to fetch Sentry event JSON from:', sentryUrl);
           let sentryEvent;
           try {
             sentryEvent = await fetchSentryEventJson(sentryUrl);
+            console.log('Fetched Sentry event JSON successfully.');
           } catch (e) {
             console.error('Could not fetch Sentry event JSON:', e);
             return;
           }
           const sentryDetails = parseSentryDetails(sentryEvent);
+          console.log('Parsed Sentry details:', sentryDetails);
           const repoOwner = repo.owner.login;
           const repoName = repo.name;
           const repoUrl = repo.clone_url;
@@ -176,7 +189,11 @@ app.post('/webhook', async (req, res) => {
             console.log('AI fix failed, added comment to issue for manual intervention.');
             return;
           }
+        } else {
+          console.log('No "sentry error" label found. Skipping issue:', issue.title);
         }
+      } else {
+        console.log('Webhook event is not an opened issue. Skipping.');
       }
     } catch (err) {
       console.error('Webhook handler error:', err);
