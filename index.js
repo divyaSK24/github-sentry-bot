@@ -35,8 +35,29 @@ function parseSentryDetails(sentryEvent) {
 }
 
 function extractSentryEventUrl(issueBody) {
-  const match = issueBody.match(/Sentry Event:\s*(https?:\/\/[^\s/]+\/api\/0\/projects\/[^\s]+\/events\/[^\s/]+)\/?/i);
-  return match ? match[1] : null;
+  // If the body is an object, search all string values for a Sentry event URL
+  if (typeof issueBody === 'object' && issueBody !== null) {
+    for (const key in issueBody) {
+      if (typeof issueBody[key] === 'string') {
+        const url = extractSentryEventUrl(issueBody[key]);
+        if (url) return url;
+      }
+    }
+    return null;
+  }
+  // If the body is a string, search for a line containing 'Sentry Event' and extract the first URL
+  if (typeof issueBody === 'string') {
+    const lines = issueBody.split('\n');
+    for (const line of lines) {
+      if (/sentry event/i.test(line)) {
+        const urlMatch = line.match(/https?:\/\/[^\s)]+/i);
+        if (urlMatch) {
+          return urlMatch[0].replace(/\/$/, '');
+        }
+      }
+    }
+  }
+  return null;
 }
 
 async function fetchSentryEventJson(sentryUrl) {
