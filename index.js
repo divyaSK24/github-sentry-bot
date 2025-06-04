@@ -256,14 +256,25 @@ app.post('/webhook', async (req, res) => {
             }
 
             // Add a comment to the issue with initial analysis
-            const analysisMsg = generateSentryAnalysis(sentryDetails);
-            await octokit.issues.createComment({
+            const analysisMsg = `<!-- sentry-bot-analysis -->\n${generateSentryAnalysis(sentryDetails)}`;
+            // Check for existing comment with the marker
+            const comments = await octokit.issues.listComments({
               owner: repo.owner.login,
               repo: repo.name,
               issue_number: issue.number,
-              body: analysisMsg
             });
-            console.log('Posted initial analysis comment on the issue.');
+            const alreadyCommented = comments.data.some(comment => comment.body && comment.body.includes('<!-- sentry-bot-analysis -->'));
+            if (!alreadyCommented) {
+              await octokit.issues.createComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                issue_number: issue.number,
+                body: analysisMsg
+              });
+              console.log('Posted initial analysis comment on the issue.');
+            } else {
+              console.log('Analysis comment already exists on the issue. Skipping duplicate comment.');
+            }
           } catch (err) {
             console.error('Error handling Sentry fix:', err);
           }
