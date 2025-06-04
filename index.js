@@ -18,19 +18,11 @@ const openai = new OpenAI({
 
 // Helper to parse Sentry details from issue body
 function parseSentryDetails(sentryEvent) {
+  // Sentry event JSON: extract from exception.values[0].stacktrace.frames (last frame is where error occurred)
   try {
     const exception = sentryEvent.exception?.values?.[0];
     const frames = exception?.stacktrace?.frames;
-    // Find the most relevant frame: last in_app frame, or last frame
-    let targetFrame = null;
-    if (frames && frames.length > 0) {
-      targetFrame = [...frames].reverse().find(f => f.in_app && f.filename && !f.filename.startsWith('webpack')) || frames[frames.length - 1];
-    }
-    // Use culprit as a fallback for file if not found in frames
-    let file = targetFrame?.filename || null;
-    if (!file && sentryEvent.culprit) {
-      file = sentryEvent.culprit;
-    }
+    const lastFrame = frames && frames.length > 0 ? frames[frames.length - 1] : null;
     return {
       file,
       line: targetFrame?.lineno || null,
@@ -295,7 +287,8 @@ app.post('/webhook', async (req, res) => {
             });
             aiFix = response.choices[0].message.content.trim();
 
-            // Apply the AI-generated fix if present and valid
+            // Remove logic that adds a comment to the code at the error line
+            // Only apply the AI-generated fix if present and valid
             if (aiFix && aiFix.length > 5 && aiFix !== '[Could not read file]') {
               // Try to extract code from a markdown code block if present
               let codeToApply = aiFix;
@@ -309,6 +302,42 @@ app.post('/webhook', async (req, res) => {
                 if (codeToApply !== fileLines[sentryDetails.line - 1]) {
                   fileLines.splice(sentryDetails.line - 1, 1, ...codeToApply.split('\n'));
                   fs.writeFileSync(path.join(localPath, sentryDetails.file), fileLines.join('\n'), 'utf8');
+                  // Proceed with commit/PR logic as there is a real code change
+                  const repoGit = simpleGit(localPath);
+                  // Set git user/email before committing
+                  await repoGit.addConfig('user.email', 'divya@5x.co');
+                  await repoGit.addConfig('user.name', 'divyask24');
+                  await repoGit.checkoutLocalBranch(branchName);
+                  await repoGit.add(sentryDetails.file);
+                  const status = await repoGit.status();
+                  if (status.staged.length > 0) {
+                    await repoGit.commit('fix: apply AI-generated fix for Sentry error');
+                    // Use a GitHub token with push access
+                    await repoGit.push(['-u', remoteWithToken, branchName]);
+                    // Check if a PR already exists for this issue (by branch name or issue number in PR body)
+                    const existingPRs = await octokit.pulls.list({
+                      owner: repoOwner,
+                      repo: repoName,
+                      state: 'open',
+                      head: `${repoOwner}:${branchName}`
+                    });
+                    if (existingPRs.data && existingPRs.data.length > 0) {
+                      console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
+                      // Only push if there are changes (already handled above)
+                    } else {
+                      await octokit.pulls.create({
+                        owner: repoOwner,
+                        repo: repoName,
+                        title: 'Automated Sentry error fix',
+                        head: branchName,
+                        base: 'dev',
+                        body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
+                      });
+                      console.log('PR created successfully');
+                    }
+                  } else {
+                    console.log('No code changes detected after AI fix, skipping commit and PR creation.');
+                  }
                 } else {
                   console.log('AI fix is identical to the original code. Skipping code change.');
                 }
