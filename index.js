@@ -85,28 +85,16 @@ function extractSentryEventUrl(issueBody) {
 }
 
 async function fetchSentryEventJson(sentryUrl) {
-  let url = sentryUrl.replace(/\/$/, '');
+  // Always ensure a single trailing slash
+  let url = sentryUrl.replace(/\/+$/, '') + '/';
   let response = await fetch(url, {
     headers: {
       'Authorization': `Bearer ${process.env.SENTRY_API_TOKEN}`
     }
   });
 
-  if (!response.ok && !url.endsWith('/json')) {
-    console.error(`First fetch failed: ${response.status} ${response.statusText}`);
-    const text = await response.text();
-    console.error('Response body:', text);
-
-    url = url + '/json';
-    response = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${process.env.SENTRY_API_TOKEN}`
-      }
-    });
-  }
-
   if (!response.ok) {
-    console.error(`Second fetch failed: ${response.status} ${response.statusText}`);
+    console.error(`Fetch failed: ${response.status} ${response.statusText}`);
     const text = await response.text();
     console.error('Response body:', text);
     throw new Error('Failed to fetch Sentry event JSON');
