@@ -216,6 +216,9 @@ app.post('/webhook', async (req, res) => {
             fs.writeFileSync(targetFile, fileContent.join('\n'), 'utf8');
             // Commit and push
             const repoGit = simpleGit(localPath);
+            // Set git user/email before committing
+            await repoGit.addConfig('user.email', 'divya@5x.co');
+            await repoGit.addConfig('user.name', 'divyask24');
             await repoGit.checkoutLocalBranch(branchName);
             await repoGit.add(sentryDetails.file);
             await repoGit.commit('fix: add comment for Sentry error');
