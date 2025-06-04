@@ -224,16 +224,26 @@ app.post('/webhook', async (req, res) => {
             await repoGit.commit('fix: add comment for Sentry error');
             // Use a GitHub token with push access
             await repoGit.push(['-u', remoteWithToken, branchName]);
-            // Create PR
-            await octokit.pulls.create({
+            // Check if a PR already exists for this issue (by branch name or issue number in PR body)
+            const existingPRs = await octokit.pulls.list({
               owner: repoOwner,
               repo: repoName,
-              title: 'Automated Sentry error fix',
-              head: branchName,
-              base: 'main',
-              body: `This PR adds a comment for the Sentry error reported in #${issue.number}`
+              state: 'open',
+              head: `${repoOwner}:${branchName}`
             });
-            console.log('PR created successfully');
+            if (existingPRs.data && existingPRs.data.length > 0) {
+              console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Skipping PR creation.`);
+            } else {
+              await octokit.pulls.create({
+                owner: repoOwner,
+                repo: repoName,
+                title: 'Automated Sentry error fix',
+                head: branchName,
+                base: 'dev',
+                body: `This PR adds a comment for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
+              });
+              console.log('PR created successfully');
+            }
 
             // Add a comment to the issue with initial analysis
             const analysisMsg = generateSentryAnalysis(sentryDetails);
