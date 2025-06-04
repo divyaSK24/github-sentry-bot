@@ -287,13 +287,27 @@ app.post('/webhook', async (req, res) => {
             } catch (e) {
               fileContent = '[Could not read file]';
             }
-            const prompt = `A Sentry error was reported in the following file and line.\n\nFile: ${sentryDetails.file}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent}\n\nSuggest a fix for the error, and provide the corrected code for the relevant section.`;
+            const prompt = `A Sentry error was reported in the following file and line.\n\nFile: ${sentryDetails.file}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent}\n\nAnalyze the relevant code context (such as the surrounding lines, function, or code block). Suggest a fix that not only addresses the immediate error but also improves the code's robustness by handling possible edge cases or negative scenarios (e.g., failed API calls, invalid data, exceptions). Apply the fix to the appropriate section of the code, replacing or updating the relevant block as needed. Provide the corrected code for the relevant section.`;
             const response = await openai.chat.completions.create({
               model: 'gpt-4',
               messages: [{ role: 'user', content: prompt }],
               max_tokens: 500,
             });
             aiFix = response.choices[0].message.content.trim();
+
+            // Apply the AI-generated fix if present and valid
+            if (aiFix && aiFix.length > 5 && aiFix !== '[Could not read file]') {
+              // Try to extract code from a markdown code block if present
+              let codeToApply = aiFix;
+              const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
+              if (codeBlockMatch) {
+                codeToApply = codeBlockMatch[1].trim();
+              }
+              // Replace the error line with the AI fix
+              let fileLines = fileContent.split('\n');
+              fileLines.splice(sentryDetails.line - 1, 1, ...codeToApply.split('\n'));
+              fs.writeFileSync(path.join(localPath, sentryDetails.file), fileLines.join('\n'), 'utf8');
+            }
           } catch (err) {
             console.error('OpenAI API error:', err);
             aiFix = null;
