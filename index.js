@@ -212,47 +212,47 @@ app.post('/webhook', async (req, res) => {
             // Read file and insert comment at the error line
             let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
             const comment = `// Sentry error here: ${sentryDetails.error}`;
-            fileContent.splice(sentryDetails.line - 1, 0, comment);
-            fs.writeFileSync(targetFile, fileContent.join('\n'), 'utf8');
-            // Commit and push
+            // Check if the comment already exists at the error line
+            const needsComment = fileContent[sentryDetails.line - 1] !== comment;
+            if (needsComment) {
+              fileContent.splice(sentryDetails.line - 1, 0, comment);
+              fs.writeFileSync(targetFile, fileContent.join('\n'), 'utf8');
+            }
+            // Only proceed with commit/PR if there are code changes (not just a comment)
             const repoGit = simpleGit(localPath);
             // Set git user/email before committing
             await repoGit.addConfig('user.email', 'divya@5x.co');
             await repoGit.addConfig('user.name', 'divyask24');
             await repoGit.checkoutLocalBranch(branchName);
             await repoGit.add(sentryDetails.file);
-            await repoGit.commit('fix: add comment for Sentry error');
-            // Use a GitHub token with push access
-            await repoGit.push(['-u', remoteWithToken, branchName]);
-            // Check if a PR already exists for this issue (by branch name or issue number in PR body)
-            const existingPRs = await octokit.pulls.list({
-              owner: repoOwner,
-              repo: repoName,
-              state: 'open',
-              head: `${repoOwner}:${branchName}`
-            });
-            if (existingPRs.data && existingPRs.data.length > 0) {
-              console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
-              // Check if the file has changed before committing
-              await repoGit.add(sentryDetails.file);
-              const status = await repoGit.status();
-              if (status.staged.length > 0) {
-                await repoGit.commit('fix: update for Sentry error');
-                await repoGit.push(['-u', remoteWithToken, branchName]);
-                console.log('Pushed new commit to existing PR branch.');
-              } else {
-                console.log('No changes to commit for existing PR branch.');
-              }
-            } else {
-              await octokit.pulls.create({
+            const status = await repoGit.status();
+            if (status.staged.length > 0) {
+              await repoGit.commit('fix: add comment for Sentry error');
+              // Use a GitHub token with push access
+              await repoGit.push(['-u', remoteWithToken, branchName]);
+              // Check if a PR already exists for this issue (by branch name or issue number in PR body)
+              const existingPRs = await octokit.pulls.list({
                 owner: repoOwner,
                 repo: repoName,
-                title: 'Automated Sentry error fix',
-                head: branchName,
-                base: 'dev',
-                body: `This PR adds a comment for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
+                state: 'open',
+                head: `${repoOwner}:${branchName}`
               });
-              console.log('PR created successfully');
+              if (existingPRs.data && existingPRs.data.length > 0) {
+                console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
+                // Only push if there are changes (already handled above)
+              } else {
+                await octokit.pulls.create({
+                  owner: repoOwner,
+                  repo: repoName,
+                  title: 'Automated Sentry error fix',
+                  head: branchName,
+                  base: 'dev',
+                  body: `This PR adds a comment for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
+                });
+                console.log('PR created successfully');
+              }
+            } else {
+              console.log('No code changes detected, skipping commit and PR creation.');
             }
 
             // Add a comment to the issue with initial analysis
