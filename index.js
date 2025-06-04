@@ -104,13 +104,13 @@ app.post('/webhook', async (req, res) => {
   (async () => {
     try {
       const event = req.headers['x-github-event'];
-      if (event === 'issues' && req.body.action === 'opened') {
+      if (event === 'issues' && req.body.action === 'labeled') {
         const issue = req.body.issue;
         const repo = req.body.repository;
-        const labels = issue.labels.map(label => label.name);
-        console.log('Issue labels:', labels);
-        if (labels.includes('sentry error')) {
-          console.log('Sentry error label found. Processing issue:', issue.title);
+        const labelName = req.body.label?.name;
+        console.log('Label added:', labelName);
+        if (labelName && labelName.toLowerCase() === 'sentry error') {
+          console.log('Processing issue because "sentry error" label was added:', issue.title);
           const sentryUrl = extractSentryEventUrl(issue.body);
           if (!sentryUrl) {
             console.error('No Sentry event URL found in issue body:', issue.body);
@@ -162,6 +162,16 @@ app.post('/webhook', async (req, res) => {
               body: `This PR adds a comment for the Sentry error reported in #${issue.number}`
             });
             console.log('PR created successfully');
+
+            // Add a comment to the issue with initial analysis
+            const analysisMsg = `\n🛠️ **Initial Sentry Analysis**\n- **Error:** ${sentryDetails.error}\n- **File:** ${sentryDetails.file}\n- **Line:** ${sentryDetails.line}\n\nThe bot will now attempt to apply an automated fix.\n`;
+            await octokit.issues.createComment({
+              owner: repo.owner.login,
+              repo: repo.name,
+              issue_number: issue.number,
+              body: analysisMsg
+            });
+            console.log('Posted initial analysis comment on the issue.');
           } catch (err) {
             console.error('Error handling Sentry fix:', err);
           }
@@ -190,10 +200,10 @@ app.post('/webhook', async (req, res) => {
             return;
           }
         } else {
-          console.log('No "sentry error" label found. Skipping issue:', issue.title);
+          console.log('Label added is not "sentry error". Skipping.');
         }
       } else {
-        console.log('Webhook event is not an opened issue. Skipping.');
+        console.log('Webhook event is not a label addition. Skipping.');
       }
     } catch (err) {
       console.error('Webhook handler error:', err);
