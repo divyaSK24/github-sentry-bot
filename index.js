@@ -36,7 +36,7 @@ function parseSentryDetails(sentryEvent) {
 function extractSentryEventUrl(issueBody) {
   if (typeof issueBody === 'object' && issueBody !== null) {
     if (typeof issueBody.sentryUrl === 'string') {
-      const cleanUrl = issueBody.sentryUrl.replace(/["'\s]+$/g, '').replace(/\/?$/, '/');
+      const cleanUrl = issueBody.sentryUrl.replace(/^["'\s]+|["'\s]+$/g, '').replace(/\/?$/, '/');
       console.log('Extracted Sentry event URL:', cleanUrl);
       return cleanUrl;
     }
@@ -49,20 +49,32 @@ function extractSentryEventUrl(issueBody) {
     return null;
   }
   if (typeof issueBody === 'string') {
-    // Try to match a line with sentryUrl (case-insensitive)
-    const sentryUrlLine = issueBody.split('\n').find(line => /sentryurl/i.test(line));
-    if (sentryUrlLine) {
-      const urlMatch = sentryUrlLine.match(/https?:\/\/[^\s"']+/i);
-      if (urlMatch) {
-        const cleanUrl = urlMatch[0].replace(/["'\s]+$/g, '').replace(/\/?$/, '/');
-        console.log('Extracted Sentry event URL from sentryUrl line:', cleanUrl);
-        return cleanUrl;
+    const lines = issueBody.split('\n');
+    for (const line of lines) {
+      console.log('Checking line for Sentry URL:', line);
+      // First, look for lines containing 'sentryUrl' (case-insensitive)
+      if (line.toLowerCase().includes('sentryurl')) {
+        const urlMatch = line.match(/https?:\/\/[^\s"']+/i);
+        if (urlMatch) {
+          const cleanUrl = urlMatch[0].replace(/^["'\s]+|["'\s]+$/g, '').replace(/\/?$/, '/');
+          console.log('Extracted Sentry event URL from sentryUrl line:', cleanUrl);
+          return cleanUrl;
+        }
+      }
+      // Next, look for any line with 'sentry' and 'http'
+      if (/sentry.*https?:\/\//i.test(line)) {
+        const urlMatch = line.match(/https?:\/\/[^\s"']+/i);
+        if (urlMatch) {
+          const cleanUrl = urlMatch[0].replace(/^["'\s]+|["'\s]+$/g, '').replace(/\/?$/, '/');
+          console.log('Extracted Sentry event URL from line:', cleanUrl);
+          return cleanUrl;
+        }
       }
     }
     // Fallback: match any Sentry event API URL
     const urlMatch = issueBody.match(/https?:\/\/[^\s"']+sentry\.io\/api\/0\/projects\/[^\s"']+\/events\/[a-z0-9]+\/?/i);
     if (urlMatch) {
-      const cleanUrl = urlMatch[0].replace(/["'\s]+$/g, '').replace(/\/?$/, '/');
+      const cleanUrl = urlMatch[0].replace(/^["'\s]+|["'\s]+$/g, '').replace(/\/?$/, '/');
       console.log('Extracted Sentry event URL:', cleanUrl);
       return cleanUrl;
     } else {
