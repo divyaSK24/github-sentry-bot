@@ -303,10 +303,20 @@ app.post('/webhook', async (req, res) => {
               if (codeBlockMatch) {
                 codeToApply = codeBlockMatch[1].trim();
               }
-              // Replace the error line with the AI fix
-              let fileLines = fileContent.split('\n');
-              fileLines.splice(sentryDetails.line - 1, 1, ...codeToApply.split('\n'));
-              fs.writeFileSync(path.join(localPath, sentryDetails.file), fileLines.join('\n'), 'utf8');
+              if (codeToApply && codeToApply.length > 0) {
+                let fileLines = fileContent.split('\n');
+                // Only replace the error line if the AI fix is different from the original
+                if (codeToApply !== fileLines[sentryDetails.line - 1]) {
+                  fileLines.splice(sentryDetails.line - 1, 1, ...codeToApply.split('\n'));
+                  fs.writeFileSync(path.join(localPath, sentryDetails.file), fileLines.join('\n'), 'utf8');
+                } else {
+                  console.log('AI fix is identical to the original code. Skipping code change.');
+                }
+              } else {
+                console.log('AI did not return a code block. Skipping code change.');
+              }
+            } else {
+              console.log('No valid AI fix returned. Skipping code change.');
             }
           } catch (err) {
             console.error('OpenAI API error:', err);
