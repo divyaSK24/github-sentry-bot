@@ -138,6 +138,10 @@ app.post('/webhook', async (req, res) => {
           }
           const sentryDetails = parseSentryDetails(sentryEvent);
           console.log('Parsed Sentry details:', sentryDetails);
+          if (!sentryDetails.file) {
+            console.error('No file found in Sentry details:', sentryDetails);
+            return;
+          }
           const repoOwner = repo.owner.login;
           const repoName = repo.name;
           const repoUrl = repo.clone_url;
@@ -145,6 +149,7 @@ app.post('/webhook', async (req, res) => {
           const localPath = path.join(__dirname, 'tmp', `${repoOwner}-${repoName}-${Date.now()}`);
           const git = simpleGit();
           const remoteWithToken = repoUrl.replace('https://', `https://${process.env.GITHUB_TOKEN}@`);
+          const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
           let aiFix;
           try {
             // Clone the repo with authentication
@@ -163,7 +168,6 @@ app.post('/webhook', async (req, res) => {
             // Use a GitHub token with push access
             await repoGit.push(['-u', remoteWithToken, branchName]);
             // Create PR
-            const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
             await octokit.pulls.create({
               owner: repoOwner,
               repo: repoName,
@@ -188,6 +192,14 @@ app.post('/webhook', async (req, res) => {
           }
 
           try {
+            // Compose a prompt for OpenAI
+            let fileContent = '';
+            try {
+              fileContent = fs.readFileSync(path.join(localPath, sentryDetails.file), 'utf8');
+            } catch (e) {
+              fileContent = '[Could not read file]';
+            }
+            const prompt = `A Sentry error was reported in the following file and line.\n\nFile: ${sentryDetails.file}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent}\n\nSuggest a fix for the error, and provide the corrected code for the relevant section.`;
             const response = await openai.createChatCompletion({
               model: 'gpt-4',
               messages: [{ role: 'user', content: prompt }],
