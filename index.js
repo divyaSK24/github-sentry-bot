@@ -49,6 +49,17 @@ function extractSentryEventUrl(issueBody) {
     return null;
   }
   if (typeof issueBody === 'string') {
+    // Try to match a line with sentryUrl (case-insensitive)
+    const sentryUrlLine = issueBody.split('\n').find(line => /sentryurl/i.test(line));
+    if (sentryUrlLine) {
+      const urlMatch = sentryUrlLine.match(/https?:\/\/[^\s"']+/i);
+      if (urlMatch) {
+        const cleanUrl = urlMatch[0].replace(/["'\s]+$/g, '').replace(/\/?$/, '/');
+        console.log('Extracted Sentry event URL from sentryUrl line:', cleanUrl);
+        return cleanUrl;
+      }
+    }
+    // Fallback: match any Sentry event API URL
     const urlMatch = issueBody.match(/https?:\/\/[^\s"']+sentry\.io\/api\/0\/projects\/[^\s"']+\/events\/[a-z0-9]+\/?/i);
     if (urlMatch) {
       const cleanUrl = urlMatch[0].replace(/["'\s]+$/g, '').replace(/\/?$/, '/');
