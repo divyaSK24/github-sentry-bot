@@ -232,7 +232,17 @@ app.post('/webhook', async (req, res) => {
               head: `${repoOwner}:${branchName}`
             });
             if (existingPRs.data && existingPRs.data.length > 0) {
-              console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Skipping PR creation.`);
+              console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
+              // Check if the file has changed before committing
+              await repoGit.add(sentryDetails.file);
+              const status = await repoGit.status();
+              if (status.staged.length > 0) {
+                await repoGit.commit('fix: update for Sentry error');
+                await repoGit.push(['-u', remoteWithToken, branchName]);
+                console.log('Pushed new commit to existing PR branch.');
+              } else {
+                console.log('No changes to commit for existing PR branch.');
+              }
             } else {
               await octokit.pulls.create({
                 owner: repoOwner,
