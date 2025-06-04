@@ -45,27 +45,35 @@ function extractSentryEventUrl(issueBody) {
     }
     return null;
   }
-  // If the body is a string, search for a line containing 'Sentry Event' and extract the first URL
+  // If the body is a string, search for any Sentry event API URL
   if (typeof issueBody === 'string') {
-    const lines = issueBody.split('\n');
-    for (const line of lines) {
-      if (/sentry event/i.test(line)) {
-        const urlMatch = line.match(/https?:\/\/[^\s)]+/i);
-        if (urlMatch) {
-          return urlMatch[0].replace(/\/$/, '');
-        }
-      }
+    // This regex matches any Sentry event API URL
+    const urlMatch = issueBody.match(/https?:\/\/[^\s]+sentry\.io\/api\/0\/projects\/[^\s]+\/events\/[a-z0-9]+\/json/i);
+    if (urlMatch) {
+      return urlMatch[0].replace(/\/$/, '');
     }
   }
   return null;
 }
 
 async function fetchSentryEventJson(sentryUrl) {
-  const response = await fetch(sentryUrl, {
+  let url = sentryUrl.replace(/\/$/, ''); // Remove trailing slash
+  let response = await fetch(url, {
     headers: {
       'Authorization': `Bearer ${process.env.SENTRY_API_TOKEN}`
     }
   });
+
+  // If the first fetch fails and the URL does not end with /json, try appending /json
+  if (!response.ok && !url.endsWith('/json')) {
+    url = url + '/json';
+    response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${process.env.SENTRY_API_TOKEN}`
+      }
+    });
+  }
+
   if (!response.ok) throw new Error('Failed to fetch Sentry event JSON');
   return await response.json();
 }
