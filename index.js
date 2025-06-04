@@ -40,9 +40,10 @@ app.post('/webhook', async (req, res) => {
       const branchName = `sentry-fix-${Date.now()}`;
       const localPath = path.join(__dirname, 'tmp', `${repoOwner}-${repoName}-${Date.now()}`);
       const git = simpleGit();
+      const remoteWithToken = repoUrl.replace('https://', `https://${process.env.GITHUB_TOKEN}@`);
       try {
-        // Clone the repo
-        await git.clone(repoUrl, localPath);
+        // Clone the repo with authentication
+        await git.clone(remoteWithToken, localPath);
         const targetFile = path.join(localPath, sentryDetails.file);
         // Read file and insert comment at the error line
         let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
@@ -55,7 +56,6 @@ app.post('/webhook', async (req, res) => {
         await repoGit.add(sentryDetails.file);
         await repoGit.commit('fix: add comment for Sentry error');
         // Use a GitHub token with push access
-        const remoteWithToken = repoUrl.replace('https://', `https://${process.env.GITHUB_TOKEN}@`);
         await repoGit.push(['-u', remoteWithToken, branchName]);
         // Create PR
         const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
