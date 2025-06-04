@@ -18,15 +18,29 @@ const openai = new OpenAI({
 
 // Helper to parse Sentry details from issue body
 function parseSentryDetails(sentryEvent) {
-  // Sentry event JSON: extract from exception.values[0].stacktrace.frames (last frame is where error occurred)
   try {
     const exception = sentryEvent.exception?.values?.[0];
     const frames = exception?.stacktrace?.frames;
-    const lastFrame = frames && frames.length > 0 ? frames[frames.length - 1] : null;
+    // Find the most relevant frame: last in_app frame, or last frame
+    let targetFrame = null;
+    if (frames && frames.length > 0) {
+      targetFrame = [...frames].reverse().find(f => f.in_app && f.filename && !f.filename.startsWith('webpack')) || frames[frames.length - 1];
+    }
+    // Use culprit as a fallback for file if not found in frames
+    let file = targetFrame?.filename || null;
+    if (!file && sentryEvent.culprit) {
+      file = sentryEvent.culprit;
+    }
     return {
-      file: lastFrame?.filename || null,
-      line: lastFrame?.lineno || null,
+      file,
+      line: targetFrame?.lineno || null,
+      col: targetFrame?.colno || null,
+      function: targetFrame?.function || null,
       error: exception?.value || sentryEvent.message || null,
+      errorType: exception?.type || null,
+      pre_context: targetFrame?.pre_context || [],
+      context_line: targetFrame?.context_line || '',
+      post_context: targetFrame?.post_context || [],
     };
   } catch (e) {
     return { file: null, line: null, error: null };
@@ -100,6 +114,38 @@ async function fetchSentryEventJson(sentryUrl) {
     throw new Error('Failed to fetch Sentry event JSON');
   }
   return await response.json();
+}
+
+// Generate a markdown analysis message from Sentry details
+function generateSentryAnalysis(details) {
+  const {
+    errorType,
+    error,
+    file,
+    line,
+    col,
+    function: func,
+    pre_context,
+    context_line,
+    post_context
+  } = details;
+
+  // Format code context
+  const codeContext = [
+    ...pre_context,
+    context_line ? `>> ${context_line}` : '',
+    ...post_context
+  ].filter(Boolean).join('\n');
+
+  // Suggest a fix based on common ReferenceError
+  let suggestion = '';
+  if (errorType === 'ReferenceError' && /not defined/.test(error || '')) {
+    suggestion = `- Ensure that the variable or function mentioned is defined and in scope.\n- If it should be imported or passed as a prop, make sure it is available in this file.`;
+  } else {
+    suggestion = `- Review the code context and error message above to identify the root cause.\n- Check for typos, missing imports, or incorrect usage.`;
+  }
+
+  return `### 🛠️ Sentry Error Analysis\n\n- **Error:** \`${errorType ? errorType + ': ' : ''}${error}\`\n- **File:** \`${file}\`\n- **Line:** \`${line}${col ? ':' + col : ''}\`\n- **Function:** \`${func || ''}\`\n\n**Context:**\n\n\`\`\`js\n${codeContext}\n\`\`\`\n\n**Suggested Fix:**\n${suggestion}`;
 }
 
 app.post('/webhook', async (req, res) => {
@@ -187,7 +233,7 @@ app.post('/webhook', async (req, res) => {
             console.log('PR created successfully');
 
             // Add a comment to the issue with initial analysis
-            const analysisMsg = `\n🛠️ **Initial Sentry Analysis**\n- **Error:** ${sentryDetails.error}\n- **File:** ${sentryDetails.file}\n- **Line:** ${sentryDetails.line}\n\nThe bot will now attempt to apply an automated fix.\n`;
+            const analysisMsg = generateSentryAnalysis(sentryDetails);
             await octokit.issues.createComment({
               owner: repo.owner.login,
               repo: repo.name,
