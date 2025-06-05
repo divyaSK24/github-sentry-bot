@@ -6,6 +6,7 @@ const { Octokit } = require('@octokit/rest');
 const fs = require('fs');
 const path = require('path');
 const OpenAI = require('openai');
+const { execSync } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -111,16 +112,20 @@ function generateSentryAnalysis(details) {
     line,
     col,
     function: func,
-    pre_context,
-    context_line,
-    post_context
+    pre_context = [],
+    context_line = '',
+    post_context = []
   } = details;
+
+  // Ensure pre_context and post_context are arrays
+  const pre = Array.isArray(pre_context) ? pre_context : [];
+  const post = Array.isArray(post_context) ? post_context : [];
 
   // Format code context
   const codeContext = [
-    ...pre_context,
+    ...pre,
     context_line ? `>> ${context_line}` : '',
-    ...post_context
+    ...post
   ].filter(Boolean).join('\n');
 
   // Suggest a fix based on common ReferenceError
@@ -231,29 +236,89 @@ app.post('/webhook', async (req, res) => {
             await repoGit.add(sentryDetails.file);
             const status = await repoGit.status();
             if (status.staged.length > 0) {
-              await repoGit.commit('fix: add comment for Sentry error');
-              // Use a GitHub token with push access
-              await repoGit.push(['-u', remoteWithToken, branchName]);
-              // Check if a PR already exists for this issue (by branch name or issue number in PR body)
-              const existingPRs = await octokit.pulls.list({
-                owner: repoOwner,
-                repo: repoName,
-                state: 'open',
-                head: `${repoOwner}:${branchName}`
-              });
-              if (existingPRs.data && existingPRs.data.length > 0) {
-                console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
-                // Only push if there are changes (already handled above)
+              // Run yarn format and lint --fix before commit
+              let formatSuccess = false;
+              let lintSuccess = false;
+              let formatError = '';
+              let lintError = '';
+              for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                  execSync('yarn format', { cwd: localPath, stdio: 'inherit' });
+                  formatSuccess = true;
+                } catch (err) {
+                  formatError = err.message || String(err);
+                  console.error('yarn format failed:', formatError);
+                  if (attempt === 0) {
+                    // Try to fix with Codex
+                    const prompt = `The following codebase failed to format with Prettier. Error: ${formatError}\nSuggest a fix for the formatting error in file: ${sentryDetails.file}`;
+                    const response = await openai.chat.completions.create({
+                      model: 'gpt-3.5-turbo-1106',
+                      messages: [{ role: 'user', content: prompt }],
+                      max_tokens: 500,
+                    });
+                    const fix = response.choices[0].message.content.trim();
+                    if (fix && fix.length > 0) {
+                      fs.writeFileSync(path.join(localPath, sentryDetails.file), fix, 'utf8');
+                      continue;
+                    }
+                  }
+                  break;
+                }
+                break;
+              }
+              for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                  execSync('yarn lint --fix', { cwd: localPath, stdio: 'inherit' });
+                  lintSuccess = true;
+                } catch (err) {
+                  lintError = err.message || String(err);
+                  console.error('yarn lint --fix failed:', lintError);
+                  if (attempt === 0) {
+                    // Try to fix with Codex
+                    const prompt = `The following codebase failed to lint with ESLint. Error: ${lintError}\nSuggest a fix for the lint error in file: ${sentryDetails.file}`;
+                    const response = await openai.chat.completions.create({
+                      model: 'gpt-3.5-turbo-1106',
+                      messages: [{ role: 'user', content: prompt }],
+                      max_tokens: 500,
+                    });
+                    const fix = response.choices[0].message.content.trim();
+                    if (fix && fix.length > 0) {
+                      fs.writeFileSync(path.join(localPath, sentryDetails.file), fix, 'utf8');
+                      continue;
+                    }
+                  }
+                  break;
+                }
+                break;
+              }
+              if (!formatSuccess || !lintSuccess) {
+                console.error('Format or lint failed, skipping commit.');
               } else {
-                await octokit.pulls.create({
+                await repoGit.add(sentryDetails.file);
+                await repoGit.commit('fix: add comment for Sentry error');
+                // Use a GitHub token with push access
+                await repoGit.push(['-u', remoteWithToken, branchName]);
+                // Check if a PR already exists for this issue (by branch name or issue number in PR body)
+                const existingPRs = await octokit.pulls.list({
                   owner: repoOwner,
                   repo: repoName,
-                  title: 'Automated Sentry error fix',
-                  head: branchName,
-                  base: 'dev',
-                  body: `This PR adds a comment for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
+                  state: 'open',
+                  head: `${repoOwner}:${branchName}`
                 });
-                console.log('PR created successfully');
+                if (existingPRs.data && existingPRs.data.length > 0) {
+                  console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
+                  // Only push if there are changes (already handled above)
+                } else {
+                  await octokit.pulls.create({
+                    owner: repoOwner,
+                    repo: repoName,
+                    title: 'Automated Sentry error fix',
+                    head: branchName,
+                    base: 'dev',
+                    body: `This PR adds a comment for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
+                  });
+                  console.log('PR created successfully');
+                }
               }
             } else {
               console.log('No code changes detected, skipping commit and PR creation.');
@@ -342,29 +407,89 @@ app.post('/webhook', async (req, res) => {
                   await repoGit.add(sentryDetails.file);
                   const status = await repoGit.status();
                   if (status.staged.length > 0) {
-                    await repoGit.commit('fix: apply AI-generated fix for Sentry error');
-                    // Use a GitHub token with push access
-                    await repoGit.push(['-u', remoteWithToken, branchName]);
-                    // Check if a PR already exists for this issue (by branch name or issue number in PR body)
-                    const existingPRs = await octokit.pulls.list({
-                      owner: repoOwner,
-                      repo: repoName,
-                      state: 'open',
-                      head: `${repoOwner}:${branchName}`
-                    });
-                    if (existingPRs.data && existingPRs.data.length > 0) {
-                      console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
-                      // Only push if there are changes (already handled above)
+                    // Run yarn format and lint --fix before commit
+                    let formatSuccess = false;
+                    let lintSuccess = false;
+                    let formatError = '';
+                    let lintError = '';
+                    for (let attempt = 0; attempt < 2; attempt++) {
+                      try {
+                        execSync('yarn format', { cwd: localPath, stdio: 'inherit' });
+                        formatSuccess = true;
+                      } catch (err) {
+                        formatError = err.message || String(err);
+                        console.error('yarn format failed:', formatError);
+                        if (attempt === 0) {
+                          // Try to fix with Codex
+                          const prompt = `The following codebase failed to format with Prettier. Error: ${formatError}\nSuggest a fix for the formatting error in file: ${sentryDetails.file}`;
+                          const response = await openai.chat.completions.create({
+                            model: 'gpt-3.5-turbo-1106',
+                            messages: [{ role: 'user', content: prompt }],
+                            max_tokens: 500,
+                          });
+                          const fix = response.choices[0].message.content.trim();
+                          if (fix && fix.length > 0) {
+                            fs.writeFileSync(path.join(localPath, sentryDetails.file), fix, 'utf8');
+                            continue;
+                          }
+                        }
+                        break;
+                      }
+                      break;
+                    }
+                    for (let attempt = 0; attempt < 2; attempt++) {
+                      try {
+                        execSync('yarn lint --fix', { cwd: localPath, stdio: 'inherit' });
+                        lintSuccess = true;
+                      } catch (err) {
+                        lintError = err.message || String(err);
+                        console.error('yarn lint --fix failed:', lintError);
+                        if (attempt === 0) {
+                          // Try to fix with Codex
+                          const prompt = `The following codebase failed to lint with ESLint. Error: ${lintError}\nSuggest a fix for the lint error in file: ${sentryDetails.file}`;
+                          const response = await openai.chat.completions.create({
+                            model: 'gpt-3.5-turbo-1106',
+                            messages: [{ role: 'user', content: prompt }],
+                            max_tokens: 500,
+                          });
+                          const fix = response.choices[0].message.content.trim();
+                          if (fix && fix.length > 0) {
+                            fs.writeFileSync(path.join(localPath, sentryDetails.file), fix, 'utf8');
+                            continue;
+                          }
+                        }
+                        break;
+                      }
+                      break;
+                    }
+                    if (!formatSuccess || !lintSuccess) {
+                      console.error('Format or lint failed, skipping commit.');
                     } else {
-                      await octokit.pulls.create({
+                      await repoGit.add(sentryDetails.file);
+                      await repoGit.commit('fix: apply AI-generated fix for Sentry error');
+                      // Use a GitHub token with push access
+                      await repoGit.push(['-u', remoteWithToken, branchName]);
+                      // Check if a PR already exists for this issue (by branch name or issue number in PR body)
+                      const existingPRs = await octokit.pulls.list({
                         owner: repoOwner,
                         repo: repoName,
-                        title: 'Automated Sentry error fix',
-                        head: branchName,
-                        base: 'dev',
-                        body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
+                        state: 'open',
+                        head: `${repoOwner}:${branchName}`
                       });
-                      console.log('PR created successfully');
+                      if (existingPRs.data && existingPRs.data.length > 0) {
+                        console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
+                        // Only push if there are changes (already handled above)
+                      } else {
+                        await octokit.pulls.create({
+                          owner: repoOwner,
+                          repo: repoName,
+                          title: 'Automated Sentry error fix',
+                          head: branchName,
+                          base: 'dev',
+                          body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
+                        });
+                        console.log('PR created successfully');
+                      }
                     }
                   } else {
                     console.log('No code changes detected after AI fix, skipping commit and PR creation.');
