@@ -209,11 +209,24 @@ app.post('/webhook', async (req, res) => {
             // Set git user/email before committing
             await repoGit.addConfig('user.email', 'divya@5x.co');
             await repoGit.addConfig('user.name', 'divyask24');
-            const branches = await repoGit.branch();
-            if (branches.all.includes(branchName)) {
-              await repoGit.checkout(branchName);
-            } else {
-              await repoGit.checkoutLocalBranch(branchName);
+            // Robust branch handling
+            await repoGit.fetch();
+            const branches = await repoGit.branch(['-a']);
+            const remoteBranch = `remotes/origin/${branchName}`;
+            try {
+              if (branches.all.includes(branchName)) {
+                await repoGit.checkout(branchName);
+                console.log(`Checked out existing local branch: ${branchName}`);
+              } else if (branches.all.includes(remoteBranch)) {
+                await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
+                console.log(`Checked out tracking branch from remote: ${branchName}`);
+              } else {
+                await repoGit.checkoutLocalBranch(branchName);
+                console.log(`Created and checked out new branch: ${branchName}`);
+              }
+            } catch (branchErr) {
+              console.error('Branch checkout/creation error:', branchErr);
+              throw branchErr;
             }
             await repoGit.add(sentryDetails.file);
             const status = await repoGit.status();
@@ -307,7 +320,25 @@ app.post('/webhook', async (req, res) => {
                   // Set git user/email before committing
                   await repoGit.addConfig('user.email', 'divya@5x.co');
                   await repoGit.addConfig('user.name', 'divyask24');
-                  await repoGit.checkoutLocalBranch(branchName);
+                  // Robust branch handling
+                  await repoGit.fetch();
+                  const branches = await repoGit.branch(['-a']);
+                  const remoteBranch = `remotes/origin/${branchName}`;
+                  try {
+                    if (branches.all.includes(branchName)) {
+                      await repoGit.checkout(branchName);
+                      console.log(`Checked out existing local branch: ${branchName}`);
+                    } else if (branches.all.includes(remoteBranch)) {
+                      await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
+                      console.log(`Checked out tracking branch from remote: ${branchName}`);
+                    } else {
+                      await repoGit.checkoutLocalBranch(branchName);
+                      console.log(`Created and checked out new branch: ${branchName}`);
+                    }
+                  } catch (branchErr) {
+                    console.error('Branch checkout/creation error:', branchErr);
+                    throw branchErr;
+                  }
                   await repoGit.add(sentryDetails.file);
                   const status = await repoGit.status();
                   if (status.staged.length > 0) {
