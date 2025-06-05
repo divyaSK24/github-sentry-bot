@@ -70,6 +70,19 @@ function parseSentryDetails(sentryEvent) {
     if (!file && sentryEvent.culprit) file = sentryEvent.culprit;
     if (!file || !error) {
       console.error('parseSentryDetails: Could not extract file or error from event.');
+      console.log('Top-level keys:', Object.keys(sentryEvent));
+      if (sentryEvent.exception) {
+        console.log('Exception keys:', Object.keys(sentryEvent.exception));
+        if (Array.isArray(sentryEvent.exception.values)) {
+          console.log('Exception.values[0] keys:', Object.keys(sentryEvent.exception.values[0] || {}));
+        }
+      }
+      if (sentryEvent.metadata) {
+        console.log('Metadata keys:', Object.keys(sentryEvent.metadata));
+      }
+      if (Array.isArray(sentryEvent.entries)) {
+        console.log('Entries types:', sentryEvent.entries.map(e => e.type));
+      }
     }
     return {
       file,
