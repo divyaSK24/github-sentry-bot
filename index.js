@@ -286,6 +286,7 @@ app.post('/webhook', async (req, res) => {
               max_tokens: 500,
             });
             aiFix = response.choices[0].message.content.trim();
+            console.log('AI fix response:', aiFix);
 
             // Remove logic that adds a comment to the code at the error line
             // Only apply the AI-generated fix if present and valid
