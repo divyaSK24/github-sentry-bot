@@ -18,85 +18,17 @@ const openai = new OpenAI({
 
 // Helper to parse Sentry details from issue body
 function parseSentryDetails(sentryEvent) {
+  // Sentry event JSON: extract from exception.values[0].stacktrace.frames (last frame is where error occurred)
   try {
-    let file = null, line = null, col = null, func = null, error = null, errorType = null;
-    // 1. Try exception.values[0].stacktrace.frames
-    if (sentryEvent.exception?.values?.length) {
-      const exception = sentryEvent.exception.values[0];
-      const frames = exception.stacktrace?.frames || [];
-      const frame = [...frames].reverse().find(f => f.filename) || frames[frames.length - 1];
-      if (frame) {
-        file = frame.filename || null;
-        line = frame.lineno || null;
-        col = frame.colno || null;
-        func = frame.function || null;
-      }
-      error = exception.value || exception.message || null;
-      errorType = exception.type || null;
-      // Look for response in exception
-      if (!error && exception.response) error = exception.response;
-    }
-    // 2. Try entries array
-    if ((!file || !error) && Array.isArray(sentryEvent.entries)) {
-      for (const entry of sentryEvent.entries) {
-        if (entry.type === 'exception' && entry.data?.values?.length) {
-          const entryException = entry.data.values[0];
-          const entryFrames = entryException.stacktrace?.frames || [];
-          const frame = [...entryFrames].reverse().find(f => f.filename) || entryFrames[entryFrames.length - 1];
-          if (frame && !file) {
-            file = frame.filename || null;
-            line = frame.lineno || null;
-            col = frame.colno || null;
-            func = frame.function || null;
-          }
-          if (!error) error = entryException.value || entryException.message || null;
-          if (!errorType) errorType = entryException.type || null;
-          if (!error && entryException.response) error = entryException.response;
-        }
-      }
-    }
-    // 3. Try metadata
-    if (!file && sentryEvent.metadata?.filename) file = sentryEvent.metadata.filename;
-    if (!error && sentryEvent.metadata?.value) error = sentryEvent.metadata.value;
-    if (!errorType && sentryEvent.metadata?.type) errorType = sentryEvent.metadata.type;
-    if (!error && sentryEvent.metadata?.message) error = sentryEvent.metadata.message;
-    // 4. Try top-level fields
-    if (!file && sentryEvent.file) file = sentryEvent.file;
-    if (!error && sentryEvent.value) error = sentryEvent.value;
-    if (!error && sentryEvent.message) error = sentryEvent.message;
-    if (!errorType && sentryEvent.type) errorType = sentryEvent.type;
-    if (!error && sentryEvent.response) error = sentryEvent.response;
-    // 5. Try culprit
-    if (!file && sentryEvent.culprit) file = sentryEvent.culprit;
-    if (!file || !error) {
-      console.error('parseSentryDetails: Could not extract file or error from event.');
-      console.log('Top-level keys:', Object.keys(sentryEvent));
-      if (sentryEvent.exception) {
-        console.log('Exception keys:', Object.keys(sentryEvent.exception));
-        if (Array.isArray(sentryEvent.exception.values)) {
-          console.log('Exception.values[0] keys:', Object.keys(sentryEvent.exception.values[0] || {}));
-        }
-      }
-      if (sentryEvent.metadata) {
-        console.log('Metadata keys:', Object.keys(sentryEvent.metadata));
-      }
-      if (Array.isArray(sentryEvent.entries)) {
-        console.log('Entries types:', sentryEvent.entries.map(e => e.type));
-      }
-    }
+    const exception = sentryEvent.exception?.values?.[0];
+    const frames = exception?.stacktrace?.frames;
+    const lastFrame = frames && frames.length > 0 ? frames[frames.length - 1] : null;
     return {
-      file,
-      line,
-      col,
-      function: func,
-      error,
-      errorType,
-      pre_context: [],
-      context_line: '',
-      post_context: [],
+      file: lastFrame?.filename || null,
+      line: lastFrame?.lineno || null,
+      error: exception?.value || sentryEvent.message || null,
     };
   } catch (e) {
-    console.error('parseSentryDetails: Exception while parsing Sentry event:', e);
     return { file: null, line: null, error: null };
   }
 }
@@ -277,7 +209,12 @@ app.post('/webhook', async (req, res) => {
             // Set git user/email before committing
             await repoGit.addConfig('user.email', 'divya@5x.co');
             await repoGit.addConfig('user.name', 'divyask24');
-            await repoGit.checkoutLocalBranch(branchName);
+            const branches = await repoGit.branch();
+            if (branches.all.includes(branchName)) {
+              await repoGit.checkout(branchName);
+            } else {
+              await repoGit.checkoutLocalBranch(branchName);
+            }
             await repoGit.add(sentryDetails.file);
             const status = await repoGit.status();
             if (status.staged.length > 0) {
