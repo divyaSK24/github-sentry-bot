@@ -18,23 +18,72 @@ const openai = new OpenAI({
 
 // Helper to parse Sentry details from issue body
 function parseSentryDetails(sentryEvent) {
-  // Sentry event JSON: extract from exception.values[0].stacktrace.frames (last frame is where error occurred)
   try {
-    const exception = sentryEvent.exception?.values?.[0];
-    const frames = exception?.stacktrace?.frames;
-    const lastFrame = frames && frames.length > 0 ? frames[frames.length - 1] : null;
+    let file = null, line = null, col = null, func = null, error = null, errorType = null;
+    // 1. Try exception.values[0].stacktrace.frames
+    if (sentryEvent.exception?.values?.length) {
+      const exception = sentryEvent.exception.values[0];
+      const frames = exception.stacktrace?.frames || [];
+      const frame = [...frames].reverse().find(f => f.filename) || frames[frames.length - 1];
+      if (frame) {
+        file = frame.filename || null;
+        line = frame.lineno || null;
+        col = frame.colno || null;
+        func = frame.function || null;
+      }
+      error = exception.value || exception.message || null;
+      errorType = exception.type || null;
+      // Look for response in exception
+      if (!error && exception.response) error = exception.response;
+    }
+    // 2. Try entries array
+    if ((!file || !error) && Array.isArray(sentryEvent.entries)) {
+      for (const entry of sentryEvent.entries) {
+        if (entry.type === 'exception' && entry.data?.values?.length) {
+          const entryException = entry.data.values[0];
+          const entryFrames = entryException.stacktrace?.frames || [];
+          const frame = [...entryFrames].reverse().find(f => f.filename) || entryFrames[entryFrames.length - 1];
+          if (frame && !file) {
+            file = frame.filename || null;
+            line = frame.lineno || null;
+            col = frame.colno || null;
+            func = frame.function || null;
+          }
+          if (!error) error = entryException.value || entryException.message || null;
+          if (!errorType) errorType = entryException.type || null;
+          if (!error && entryException.response) error = entryException.response;
+        }
+      }
+    }
+    // 3. Try metadata
+    if (!file && sentryEvent.metadata?.filename) file = sentryEvent.metadata.filename;
+    if (!error && sentryEvent.metadata?.value) error = sentryEvent.metadata.value;
+    if (!errorType && sentryEvent.metadata?.type) errorType = sentryEvent.metadata.type;
+    if (!error && sentryEvent.metadata?.message) error = sentryEvent.metadata.message;
+    // 4. Try top-level fields
+    if (!file && sentryEvent.file) file = sentryEvent.file;
+    if (!error && sentryEvent.value) error = sentryEvent.value;
+    if (!error && sentryEvent.message) error = sentryEvent.message;
+    if (!errorType && sentryEvent.type) errorType = sentryEvent.type;
+    if (!error && sentryEvent.response) error = sentryEvent.response;
+    // 5. Try culprit
+    if (!file && sentryEvent.culprit) file = sentryEvent.culprit;
+    if (!file || !error) {
+      console.error('parseSentryDetails: Could not extract file or error from event.');
+    }
     return {
       file,
-      line: targetFrame?.lineno || null,
-      col: targetFrame?.colno || null,
-      function: targetFrame?.function || null,
-      error: exception?.value || sentryEvent.message || null,
-      errorType: exception?.type || null,
-      pre_context: targetFrame?.pre_context || [],
-      context_line: targetFrame?.context_line || '',
-      post_context: targetFrame?.post_context || [],
+      line,
+      col,
+      function: func,
+      error,
+      errorType,
+      pre_context: [],
+      context_line: '',
+      post_context: [],
     };
   } catch (e) {
+    console.error('parseSentryDetails: Exception while parsing Sentry event:', e);
     return { file: null, line: null, error: null };
   }
 }
@@ -281,7 +330,7 @@ app.post('/webhook', async (req, res) => {
             }
             const prompt = `A Sentry error was reported in the following file and line.\n\nFile: ${sentryDetails.file}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent}\n\nAnalyze the relevant code context (such as the surrounding lines, function, or code block). Suggest a fix that not only addresses the immediate error but also improves the code's robustness by handling possible edge cases or negative scenarios (e.g., failed API calls, invalid data, exceptions). Apply the fix to the appropriate section of the code, replacing or updating the relevant block as needed. Provide the corrected code for the relevant section.`;
             const response = await openai.chat.completions.create({
-              model: 'gpt-4',
+              model: 'gpt-3.5-turbo-1106',
               messages: [{ role: 'user', content: prompt }],
               max_tokens: 500,
             });
