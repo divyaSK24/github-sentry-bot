@@ -309,10 +309,11 @@ app.post('/webhook', async (req, res) => {
                   console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
                   // Only push if there are changes (already handled above)
                 } else {
+                  const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
                   await octokit.pulls.create({
                     owner: repoOwner,
                     repo: repoName,
-                    title: 'Automated Sentry error fix',
+                    title: prTitle,
                     head: branchName,
                     base: 'dev',
                     body: `This PR adds a comment for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
@@ -480,10 +481,11 @@ app.post('/webhook', async (req, res) => {
                         console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
                         // Only push if there are changes (already handled above)
                       } else {
+                        const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
                         await octokit.pulls.create({
                           owner: repoOwner,
                           repo: repoName,
-                          title: 'Automated Sentry error fix',
+                          title: prTitle,
                           head: branchName,
                           base: 'dev',
                           body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
