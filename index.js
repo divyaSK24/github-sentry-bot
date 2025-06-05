@@ -331,7 +331,7 @@ app.post('/webhook', async (req, res) => {
                         title: 'Automated Sentry error fix',
                         head: branchName,
                         base: 'dev',
-                        body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}`
+                        body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
                       });
                       console.log('PR created successfully');
                     }
