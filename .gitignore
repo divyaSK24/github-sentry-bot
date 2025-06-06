@@ -1,8 +1,19 @@
 # Node modules
 node_modules/
 
-# Environment variables
-.env
+# Yarn
+.yarn/
+yarn.lock
+
+# Build output
+.next/
+dist/
+coverage/
+tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
 
 # Logs
 logs/
@@ -10,12 +21,3 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Optional: coverage reports, build artifacts, etc.
-coverage/
-dist/
-tmp/
