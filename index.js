@@ -21,27 +21,70 @@ const openai = new OpenAI({
 // Helper to parse Sentry details from issue body
 function parseSentryDetails(sentryEvent) {
   try {
-    // Try exception stacktrace frames
+    // 1. Try exception stacktrace frames
     const exception = sentryEvent.exception?.values?.[0];
     const frames = exception?.stacktrace?.frames;
     let lastFrame = frames && frames.length > 0 ? frames[frames.length - 1] : null;
 
-    // Try to get file from various possible fields
     let file = lastFrame?.filename || lastFrame?.abs_path || lastFrame?.module || null;
     let line = lastFrame?.lineno || null;
     let func = lastFrame?.function || null;
 
-    // Fallbacks for Java/other events
+    // 2. Fallbacks for Java/other events
     if (!file && sentryEvent.culprit) file = sentryEvent.culprit;
+    if (!file && sentryEvent.transaction) file = sentryEvent.transaction;
+    if (!file && sentryEvent.request?.url) file = sentryEvent.request.url;
+    if (!file && sentryEvent.request?.method) file = `${sentryEvent.request.method} ${file || ''}`;
     if (!file && sentryEvent.metadata?.filename) file = sentryEvent.metadata.filename;
     if (!line && sentryEvent.metadata?.line) line = sentryEvent.metadata.line;
 
-    // Fallback to top-level error/message
-    let error = exception?.value || sentryEvent.message || sentryEvent.title || sentryEvent.error || null;
+    // 3. Try tags/context for endpoint/controller
+    if (!file && sentryEvent.tags) {
+      for (const tag of sentryEvent.tags) {
+        if (Array.isArray(tag) && tag[0] && /endpoint|url|route|controller/i.test(tag[0])) {
+          file = tag[1];
+          break;
+        }
+      }
+    }
+    if (!file && sentryEvent.contexts?.trace?.op) file = sentryEvent.contexts.trace.op;
 
-    return { file, line, function: func, error };
+    // 4. Fallback to logentry/message
+    let error = exception?.value || sentryEvent.logentry?.message || sentryEvent.message || sentryEvent.title || sentryEvent.error || null;
+
+    // 5. Try to extract controller/service from error message if nothing else
+    if (!file && error) {
+      const match = error.match(/([A-Za-z0-9]+Controller|Service|Repository)/);
+      if (match) file = match[1];
+    }
+
+    // 6. Fallback to transaction name if still nothing
+    if (!file && sentryEvent.transaction) file = sentryEvent.transaction;
+
+    // 7. Extract type, value, category from multiple locations
+    let type = exception?.type || sentryEvent.type || sentryEvent.metadata?.type || null;
+    let value = exception?.value || sentryEvent.value || sentryEvent.metadata?.value || null;
+    let category = sentryEvent.category || sentryEvent.metadata?.category || null;
+
+    // 8. Try top-level fields if not found
+    if (!type && sentryEvent['type']) type = sentryEvent['type'];
+    if (!value && sentryEvent['value']) value = sentryEvent['value'];
+    if (!category && sentryEvent['category']) category = sentryEvent['category'];
+
+    // 9. As a last resort, search the entire JSON for a file path with a known extension
+    if (!file) {
+      const exts = ['java', 'js', 'ts', 'tsx', 'jsx', 'py', 'go', 'rb', 'php', 'cs', 'cpp', 'c', 'kt', 'swift'];
+      const fileRegex = new RegExp(`[\\w/\\\\.-]+\\.(${exts.join('|')})`, 'gi');
+      const jsonString = JSON.stringify(sentryEvent);
+      const matches = jsonString.match(fileRegex);
+      if (matches && matches.length > 0) {
+        file = matches[0];
+      }
+    }
+
+    return { file, line, function: func, error, type, value, category };
   } catch (e) {
-    return { file: null, line: null, error: null };
+    return { file: null, line: null, error: null, type: null, value: null, category: null };
   }
 }
 
