@@ -8,6 +8,7 @@ const path = require('path');
 const OpenAI = require('openai');
 const { execSync } = require('child_process');
 const glob = require('glob');
+const diff = require('diff');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -546,10 +547,23 @@ Please return the fixed version of the file, making only the minimal changes nee
                 fs.writeFileSync(targetFile, aiFix, 'utf8');
                 console.log('AI full file fix received and written.');
               }
-              // Apply AI fix directly and proceed to commit/PR
-              if (aiFix && aiFix.length > 0) {
-                fs.writeFileSync(targetFile, aiFix, 'utf8');
+              // Compare AI fix with original file content using diff
+              const originalContent = fs.readFileSync(targetFile, 'utf8').trim();
+              const aiFixTrimmed = aiFix.trim();
+              // Compute the diff
+              const changes = diff.diffLines(originalContent, aiFixTrimmed);
+              // Check if the diff is meaningful (not just deletion or whitespace)
+              const hasMeaningfulChange = changes.some(change =>
+                (change.added || change.removed) &&
+                change.value.replace(/\s/g, '').length > 0
+              );
+              if (hasMeaningfulChange) {
+                fs.writeFileSync(targetFile, aiFixTrimmed, 'utf8');
                 console.log('AI fix applied to file:', targetFile);
+                // Optionally, log the diff for review
+                console.log('Diff:', changes);
+              } else {
+                console.warn('AI fix is not a meaningful change. Skipping file update.');
               }
               // Proceed with commit/PR logic for UI
               const repoGit = simpleGit(localPath);
