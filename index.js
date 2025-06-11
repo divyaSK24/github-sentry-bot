@@ -298,14 +298,19 @@ app.post('/webhook', async (req, res) => {
                 }
               }
               let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Java-specific AI prompt
-              const aiPrompt = `A Sentry error was reported in the following Java file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent.join('\n')}\n\nIf the fix can be made by updating a single Java method or class, return ONLY that complete method or class (with its signature) in a markdown code block. If the fix requires changes in multiple places or is ambiguous, return the entire corrected Java file in a markdown code block.`;
-              const combinedResponse = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo-1106',
-                messages: [{ role: 'user', content: aiPrompt }],
-                max_tokens: 2000,
+              // Java-specific AI prompt using Codex
+              const codeContext = fileContent.slice(Math.max(0, sentryDetails.line - 6), sentryDetails.line + 5).join('\n');
+              const aiPrompt = `A Sentry error was reported in the following Java file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the code context:\n${codeContext}\n\nPlease return the fixed code for this file or function, in a markdown code block, with no explanation.`;
+              console.log('Codex AI Prompt (Java):', aiPrompt);
+              const codexResponse = await openai.completions.create({
+                model: 'code-davinci-002',
+                prompt: aiPrompt,
+                max_tokens: 1500,
+                temperature: 0,
+                stop: null,
               });
-              let aiFix = combinedResponse.choices[0].message.content.trim();
+              console.log('Codex AI Response (Java):', codexResponse.choices[0].text);
+              let aiFix = codexResponse.choices[0].text.trim();
               const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
               if (codeBlockMatch) {
                 aiFix = codeBlockMatch[1].trim();
@@ -441,14 +446,19 @@ app.post('/webhook', async (req, res) => {
                 }
               }
               let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Next.js/JS/TS-specific AI prompt
-              const aiPrompt = `A Sentry error was reported in the following file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent.join('\n')}\n\nIf the fix can be made by updating a single function, class, or code block, return ONLY that complete block (with its name/signature) in a markdown code block. If the fix requires changes in multiple places or is ambiguous, return the entire corrected file in a markdown code block.`;
-              const combinedResponse = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo-1106',
-                messages: [{ role: 'user', content: aiPrompt }],
-                max_tokens: 2000,
+              // Next.js/JS/TS-specific AI prompt using Codex
+              const codeContext = fileContent.slice(Math.max(0, sentryDetails.line - 6), sentryDetails.line + 5).join('\n');
+              const aiPrompt = `A Sentry error was reported in the following file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the code context:\n${codeContext}\n\nPlease return the fixed code for this file or function, in a markdown code block, with no explanation.`;
+              console.log('Codex AI Prompt (Next.js):', aiPrompt);
+              const codexResponse = await openai.completions.create({
+                model: 'code-davinci-002',
+                prompt: aiPrompt,
+                max_tokens: 1500,
+                temperature: 0,
+                stop: null,
               });
-              let aiFix = combinedResponse.choices[0].message.content.trim();
+              console.log('Codex AI Response (Next.js):', codexResponse.choices[0].text);
+              let aiFix = codexResponse.choices[0].text.trim();
               const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
               if (codeBlockMatch) {
                 aiFix = codeBlockMatch[1].trim();
