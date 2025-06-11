@@ -538,6 +538,12 @@ app.post('/webhook', async (req, res) => {
                 fs.writeFileSync(targetFile, aiFix, 'utf8');
                 console.log('AI full file fix received and written.');
               }
+              // Ensure correct Node version
+              try {
+                execSync('nvm use 20.12.1', { cwd: localPath, stdio: 'inherit' });
+              } catch (err) {
+                console.error('nvm use failed:', err.message || String(err));
+              }
               // Run yarn format
               let formatSuccess = false;
               try {
