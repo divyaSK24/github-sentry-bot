@@ -349,19 +349,18 @@ app.post('/webhook', async (req, res) => {
                 }
               }
               let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Java-specific AI prompt using Codex
+              // Java-specific AI prompt using gpt-3.5-turbo
               const codeContext = fileContent.slice(Math.max(0, sentryDetails.line - 6), sentryDetails.line + 5).join('\n');
               const aiPrompt = `A Sentry error was reported in the following Java file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the code context:\n${codeContext}\n\nPlease return the fixed code for this file or function, in a markdown code block, with no explanation.`;
-              console.log('Codex AI Prompt (Java):', aiPrompt);
-              const codexResponse = await openai.completions.create({
-                model: 'code-davinci-002',
-                prompt: aiPrompt,
+              console.log('AI Prompt (Java):', aiPrompt);
+              const gptResponse = await openai.chat.completions.create({
+                model: 'gpt-3.5-turbo',
+                messages: [{ role: 'user', content: aiPrompt }],
                 max_tokens: 1500,
                 temperature: 0,
-                stop: null,
               });
-              console.log('Codex AI Response (Java):', codexResponse.choices[0].text);
-              let aiFix = codexResponse.choices[0].text.trim();
+              console.log('AI Response (Java):', gptResponse.choices[0].message.content);
+              let aiFix = gptResponse.choices[0].message.content.trim();
               const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
               if (codeBlockMatch) {
                 aiFix = codeBlockMatch[1].trim();
@@ -497,19 +496,18 @@ app.post('/webhook', async (req, res) => {
                 }
               }
               let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Next.js/JS/TS-specific AI prompt using Codex
+              // Next.js/JS/TS-specific AI prompt using gpt-3.5-turbo
               const codeContext = fileContent.slice(Math.max(0, sentryDetails.line - 6), sentryDetails.line + 5).join('\n');
               const aiPrompt = `A Sentry error was reported in the following file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the code context:\n${codeContext}\n\nPlease return the fixed code for this file or function, in a markdown code block, with no explanation.`;
-              console.log('Codex AI Prompt (Next.js):', aiPrompt);
-              const codexResponse = await openai.completions.create({
-                model: 'code-davinci-002',
-                prompt: aiPrompt,
+              console.log('AI Prompt (Next.js):', aiPrompt);
+              const gptResponse = await openai.chat.completions.create({
+                model: 'gpt-3.5-turbo',
+                messages: [{ role: 'user', content: aiPrompt }],
                 max_tokens: 1500,
                 temperature: 0,
-                stop: null,
               });
-              console.log('Codex AI Response (Next.js):', codexResponse.choices[0].text);
-              let aiFix = codexResponse.choices[0].text.trim();
+              console.log('AI Response (Next.js):', gptResponse.choices[0].message.content);
+              let aiFix = gptResponse.choices[0].message.content.trim();
               const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
               if (codeBlockMatch) {
                 aiFix = codeBlockMatch[1].trim();
