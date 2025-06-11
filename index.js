@@ -293,12 +293,15 @@ app.post('/webhook', async (req, res) => {
           try {
             sentryEvent = await fetchSentryEventJson(sentryUrl);
             console.log('Fetched Sentry event JSON successfully.');
+            // Log the full stacktrace frames for debugging
+            const frames = sentryEvent.exception?.values?.[0]?.stacktrace?.frames;
+            console.log('Sentry stacktrace frames:', frames);
           } catch (e) {
             console.error('Could not fetch Sentry event JSON:', e);
             return;
           }
-          const sentryDetails = parseSentryDetails(sentryEvent);
-          console.log('Parsed Sentry details:', sentryDetails);
+          const sentryDetails = extractSrcFrame(sentryEvent);
+          console.log('Extracted srcFrame:', sentryDetails);
           if (!sentryDetails.file) {
             console.error('No file found in Sentry details:', sentryDetails);
             return;
