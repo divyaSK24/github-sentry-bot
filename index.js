@@ -538,60 +538,10 @@ app.post('/webhook', async (req, res) => {
                 fs.writeFileSync(targetFile, aiFix, 'utf8');
                 console.log('AI full file fix received and written.');
               }
-              // Ensure correct Node version
-              try {
-                execSync('nvm use 20.12.1', { cwd: localPath, stdio: 'inherit' });
-              } catch (err) {
-                console.error('nvm use failed:', err.message || String(err));
-              }
-              // Run yarn format
-              let formatSuccess = false;
-              try {
-                execSync('yarn format', { cwd: localPath, stdio: 'inherit' });
-                formatSuccess = true;
-              } catch (err) {
-                console.error('yarn format failed:', err.message || String(err));
-              }
-              // Run yarn lint
-              let lintSuccess = false;
-              let lintError = '';
-              try {
-                execSync('yarn lint', { cwd: localPath, stdio: 'inherit' });
-                lintSuccess = true;
-              } catch (err) {
-                lintError = err.message || String(err);
-                console.error('yarn lint failed:', lintError);
-              }
-              // If lint failed, use AI to fix
-              if (!lintSuccess && lintError) {
-                const lintPrompt = `The following lint errors were found:\n${lintError}\n\nPlease return the fixed code for the file(s) mentioned, in a markdown code block, with no explanation.`;
-                const gptResponse = await openai.chat.completions.create({
-                  model: 'gpt-3.5-turbo',
-                  messages: [{ role: 'user', content: lintPrompt }],
-                  max_tokens: 1500,
-                  temperature: 0,
-                });
-                let aiFix = gptResponse.choices[0].message.content.trim();
-                const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
-                if (codeBlockMatch) {
-                  aiFix = codeBlockMatch[1].trim();
-                  // Write the fix to the main file being processed
-                  fs.writeFileSync(targetFile, aiFix, 'utf8');
-                  console.log('AI lint fix applied to file:', targetFile);
-                  // Optionally, re-run yarn lint after applying the AI fix
-                  try {
-                    execSync('yarn lint', { cwd: localPath, stdio: 'inherit' });
-                    lintSuccess = true;
-                  } catch (err) {
-                    console.error('yarn lint still failed after AI fix:', err.message || String(err));
-                  }
-                }
-              }
-              // Always proceed with commit/PR, but warn if format/lint failed
-              let prWarning = '';
-              if (!formatSuccess || !lintSuccess) {
-                console.warn('Proceeding with commit/PR even though format or lint failed.');
-                prWarning = '\n\n:warning: Format or lint failed during automation. Please review and fix any issues before merging.';
+              // Apply AI fix directly and proceed to commit/PR
+              if (aiFix && aiFix.length > 0) {
+                fs.writeFileSync(targetFile, aiFix, 'utf8');
+                console.log('AI fix applied to file:', targetFile);
               }
               // Proceed with commit/PR logic for UI
               const repoGit = simpleGit(localPath);
@@ -641,7 +591,7 @@ app.post('/webhook', async (req, res) => {
                     title: prTitle,
                     head: branchName,
                     base: 'dev',
-                    body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}${prWarning}`
+                    body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
                   });
                   console.log('PR created successfully');
                 }
