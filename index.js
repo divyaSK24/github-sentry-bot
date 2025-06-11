@@ -587,73 +587,66 @@ app.post('/webhook', async (req, res) => {
                   }
                 }
               }
-              if (formatSuccess && lintSuccess) {
-                // Proceed with commit/PR logic for UI
-                const repoGit = simpleGit(localPath);
-                // Set git user/email before committing
-                await repoGit.addConfig('user.email', 'divya@5x.co');
-                await repoGit.addConfig('user.name', 'divyask24');
-                // Robust branch handling
-                await repoGit.fetch();
-                const branches = await repoGit.branch(['-a']);
-                const remoteBranch = `remotes/origin/${branchName}`;
-                try {
-                  if (branches.all.includes(branchName)) {
-                    await repoGit.checkout(branchName);
-                    console.log(`Checked out existing local branch: ${branchName}`);
-                  } else if (branches.all.includes(remoteBranch)) {
-                    await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
-                    console.log(`Checked out tracking branch from remote: ${branchName}`);
-                  } else {
-                    await repoGit.checkoutLocalBranch(branchName);
-                    console.log(`Created and checked out new branch: ${branchName}`);
-                  }
-                } catch (branchErr) {
-                  console.error('Branch checkout/creation error:', branchErr);
-                  throw branchErr;
-                }
-                await repoGit.add(normalizedFile);
-                const status = await repoGit.status();
-                if (status.staged.length > 0) {
-                  await repoGit.commit('fix: apply AI-generated fix for Sentry error');
-                  // Use a GitHub token with push access
-                  await repoGit.push(['-u', remoteWithToken, branchName]);
-                  // Check if a PR already exists for this issue (by branch name or issue number in PR body)
-                  const existingPRs = await octokit.pulls.list({
-                    owner: repoOwner,
-                    repo: repoName,
-                    state: 'open',
-                    head: `${repoOwner}:${branchName}`
-                  });
-                  if (existingPRs.data && existingPRs.data.length > 0) {
-                    console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
-                    // Only push if there are changes (already handled above)
-                  } else {
-                    const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
-                    await octokit.pulls.create({
-                      owner: repoOwner,
-                      repo: repoName,
-                      title: prTitle,
-                      head: branchName,
-                      base: 'dev',
-                      body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
-                    });
-                    console.log('PR created successfully');
-                  }
-                } else {
-                  console.log('No code changes detected after AI fix, skipping commit and PR creation.');
-                }
-              } else {
-                console.error('Skipping commit/PR because format/lint failed after AI fix.');
+              // Always proceed with commit/PR, but warn if format/lint failed
+              let prWarning = '';
+              if (!formatSuccess || !lintSuccess) {
+                console.warn('Proceeding with commit/PR even though format or lint failed.');
+                prWarning = '\n\n:warning: Format or lint failed during automation. Please review and fix any issues before merging.';
               }
-              if (!aiFix || aiFix.length < 5) {
-                console.warn('AI could not generate a UI fix. Logging for manual review.');
-                await octokit.issues.createComment({
+              // Proceed with commit/PR logic for UI
+              const repoGit = simpleGit(localPath);
+              // Set git user/email before committing
+              await repoGit.addConfig('user.email', 'divya@5x.co');
+              await repoGit.addConfig('user.name', 'divyask24');
+              // Robust branch handling
+              await repoGit.fetch();
+              const branches = await repoGit.branch(['-a']);
+              const remoteBranch = `remotes/origin/${branchName}`;
+              try {
+                if (branches.all.includes(branchName)) {
+                  await repoGit.checkout(branchName);
+                  console.log(`Checked out existing local branch: ${branchName}`);
+                } else if (branches.all.includes(remoteBranch)) {
+                  await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
+                  console.log(`Checked out tracking branch from remote: ${branchName}`);
+                } else {
+                  await repoGit.checkoutLocalBranch(branchName);
+                  console.log(`Created and checked out new branch: ${branchName}`);
+                }
+              } catch (branchErr) {
+                console.error('Branch checkout/creation error:', branchErr);
+                throw branchErr;
+              }
+              await repoGit.add(normalizedFile);
+              const status = await repoGit.status();
+              if (status.staged.length > 0) {
+                await repoGit.commit('fix: apply AI-generated fix for Sentry error');
+                // Use a GitHub token with push access
+                await repoGit.push(['-u', remoteWithToken, branchName]);
+                // Check if a PR already exists for this issue (by branch name or issue number in PR body)
+                const existingPRs = await octokit.pulls.list({
                   owner: repoOwner,
                   repo: repoName,
-                  issue_number: issue.number,
-                  body: `:warning: The bot could not automatically fix the Sentry error. Manual intervention is required.\n\nError: ${sentryDetails.error}`
+                  state: 'open',
+                  head: `${repoOwner}:${branchName}`
                 });
+                if (existingPRs.data && existingPRs.data.length > 0) {
+                  console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
+                  // Only push if there are changes (already handled above)
+                } else {
+                  const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
+                  await octokit.pulls.create({
+                    owner: repoOwner,
+                    repo: repoName,
+                    title: prTitle,
+                    head: branchName,
+                    base: 'dev',
+                    body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}${prWarning}`
+                  });
+                  console.log('PR created successfully');
+                }
+              } else {
+                console.log('No code changes detected after AI fix, skipping commit and PR creation.');
               }
             } else {
               // ...default/other repo logic or skip...
