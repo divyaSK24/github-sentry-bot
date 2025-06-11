@@ -496,10 +496,18 @@ app.post('/webhook', async (req, res) => {
                 }
               }
               let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Next.js/JS/TS-specific AI prompt using gpt-3.5-turbo
-              const codeContext = fileContent.slice(Math.max(0, sentryDetails.line - 6), sentryDetails.line + 5).join('\n');
-              const aiPrompt = `A Sentry error was reported in the following file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the code context:\n${codeContext}\n\nPlease return the fixed code for this file or function, in a markdown code block, with no explanation.`;
-              console.log('AI Prompt (Next.js):', aiPrompt);
+              // Improved AI prompt with full file content, error info, and code change comment instruction
+              const fullFileContent = fs.readFileSync(targetFile, 'utf8');
+              const aiPrompt = `A Sentry error was reported by Sentry in the following file and line:
+File: ${normalizedFile}
+Line: ${sentryDetails.line}
+Error: ${sentryDetails.error}
+
+Here is the complete content of the file:
+${fullFileContent}
+
+Please return the fixed version of the file, making only the minimal changes needed to resolve the error above. Add a clear comment in the file at the location where you make code changes, so reviewers can easily spot the fix. Do not replace or delete unrelated code. Return only the fixed code in a markdown code block.`;
+              console.log('AI Prompt (Improved):', aiPrompt);
               const gptResponse = await openai.chat.completions.create({
                 model: 'gpt-3.5-turbo',
                 messages: [{ role: 'user', content: aiPrompt }],
