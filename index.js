@@ -25,11 +25,34 @@ function parseSentryDetails(sentryEvent) {
     // 1. Try exception stacktrace frames
     const exception = sentryEvent.exception?.values?.[0];
     const frames = exception?.stacktrace?.frames;
-    let lastFrame = frames && frames.length > 0 ? frames[frames.length - 1] : null;
+    // Get the first frame where the error occurred
+    let errorFrame = frames && frames.length > 0 ? frames[0] : null;
 
-    let file = lastFrame?.filename || lastFrame?.abs_path || lastFrame?.module || null;
-    let line = lastFrame?.lineno || null;
-    let func = lastFrame?.function || null;
+    let file = errorFrame?.filename || errorFrame?.abs_path || errorFrame?.module || null;
+    let line = errorFrame?.lineno || null;
+    let col = errorFrame?.colno || null;
+    let func = errorFrame?.function || null;
+    let pre_context = errorFrame?.pre_context || [];
+    let context_line = errorFrame?.context_line || '';
+    let post_context = errorFrame?.post_context || [];
+    let errorType = exception?.type || null;
+    let error = exception?.value || null;
+
+    // If we can't find the error in the first frame, try to find a frame with source code
+    if (!file || !line) {
+      for (const frame of frames || []) {
+        if (frame.filename && frame.lineno) {
+          file = frame.filename || frame.abs_path || frame.module;
+          line = frame.lineno;
+          col = frame.colno;
+          func = frame.function;
+          pre_context = frame.pre_context || pre_context;
+          context_line = frame.context_line || context_line;
+          post_context = frame.post_context || post_context;
+          break;
+        }
+      }
+    }
 
     // 2. Fallbacks for Java/other events
     if (!file && sentryEvent.culprit) file = sentryEvent.culprit;
@@ -50,8 +73,10 @@ function parseSentryDetails(sentryEvent) {
     }
     if (!file && sentryEvent.contexts?.trace?.op) file = sentryEvent.contexts.trace.op;
 
-    // 4. Fallback to logentry/message
-    let error = exception?.value || sentryEvent.logentry?.message || sentryEvent.message || sentryEvent.title || sentryEvent.error || null;
+    // 4. Fallback to logentry/message if error not found
+    if (!error) {
+      error = sentryEvent.logentry?.message || sentryEvent.message || sentryEvent.title || sentryEvent.error || null;
+    }
 
     // 5. Try to extract controller/service from error message if nothing else
     if (!file && error) {
@@ -63,13 +88,17 @@ function parseSentryDetails(sentryEvent) {
     if (!file && sentryEvent.transaction) file = sentryEvent.transaction;
 
     // 7. Extract type, value, category from multiple locations
-    let type = exception?.type || sentryEvent.type || sentryEvent.metadata?.type || null;
-    let value = exception?.value || sentryEvent.value || sentryEvent.metadata?.value || null;
+    if (!errorType) {
+      errorType = sentryEvent.type || sentryEvent.metadata?.type || null;
+    }
+    if (!error) {
+      error = sentryEvent.value || sentryEvent.metadata?.value || null;
+    }
     let category = sentryEvent.category || sentryEvent.metadata?.category || null;
 
     // 8. Try top-level fields if not found
-    if (!type && sentryEvent['type']) type = sentryEvent['type'];
-    if (!value && sentryEvent['value']) value = sentryEvent['value'];
+    if (!errorType && sentryEvent['type']) errorType = sentryEvent['type'];
+    if (!error && sentryEvent['value']) error = sentryEvent['value'];
     if (!category && sentryEvent['category']) category = sentryEvent['category'];
 
     // 9. As a last resort, search the entire JSON for a file path with a known extension
@@ -83,9 +112,31 @@ function parseSentryDetails(sentryEvent) {
       }
     }
 
-    return { file, line, function: func, error, type, value, category };
+    return { 
+      file, 
+      line, 
+      col,
+      function: func, 
+      error, 
+      errorType, 
+      category,
+      pre_context,
+      context_line,
+      post_context
+    };
   } catch (e) {
-    return { file: null, line: null, error: null, type: null, value: null, category: null };
+    console.error('Error parsing Sentry details:', e);
+    return { 
+      file: null, 
+      line: null, 
+      col: null,
+      error: null, 
+      errorType: null, 
+      category: null,
+      pre_context: [],
+      context_line: '',
+      post_context: []
+    };
   }
 }
 
@@ -349,7 +400,7 @@ app.post('/webhook', async (req, res) => {
                   return;
                 }
               }
-              let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
+            let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
               // Java-specific AI prompt using gpt-3.5-turbo
               const codeContext = fileContent.slice(Math.max(0, sentryDetails.line - 6), sentryDetails.line + 5).join('\n');
               const aiPrompt = `A Sentry error was reported in the following Java file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the code context:\n${codeContext}\n\nPlease return the fixed code for this file or function, in a markdown code block, with no explanation.`;
@@ -401,6 +452,174 @@ app.post('/webhook', async (req, res) => {
               }
               if (testsPassed) {
                 // Proceed with commit/PR logic for Java
+            const repoGit = simpleGit(localPath);
+                // Set git user/email before committing
+                await repoGit.addConfig('user.email', 'divya@5x.co');
+                await repoGit.addConfig('user.name', 'divyask24');
+                // Robust branch handling
+                await repoGit.fetch();
+                const branches = await repoGit.branch(['-a']);
+                const remoteBranch = `remotes/origin/${branchName}`;
+                try {
+                  if (branches.all.includes(branchName)) {
+                    await repoGit.checkout(branchName);
+                    console.log(`Checked out existing local branch: ${branchName}`);
+                  } else if (branches.all.includes(remoteBranch)) {
+                    await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
+                    console.log(`Checked out tracking branch from remote: ${branchName}`);
+                  } else {
+            await repoGit.checkoutLocalBranch(branchName);
+                    console.log(`Created and checked out new branch: ${branchName}`);
+                  }
+                } catch (branchErr) {
+                  console.error('Branch checkout/creation error:', branchErr);
+                  throw branchErr;
+                }
+                await repoGit.add(normalizedFile);
+                const status = await repoGit.status();
+                if (status.staged.length > 0) {
+                  await repoGit.commit('fix: apply AI-generated fix for Sentry error');
+            // Use a GitHub token with push access
+            await repoGit.push(['-u', remoteWithToken, branchName]);
+                  // Check if a PR already exists for this issue (by branch name or issue number in PR body)
+                  const existingPRs = await octokit.pulls.list({
+                    owner: repoOwner,
+                    repo: repoName,
+                    state: 'open',
+                    head: `${repoOwner}:${branchName}`
+                  });
+                  if (existingPRs.data && existingPRs.data.length > 0) {
+                    console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
+                    // Only push if there are changes (already handled above)
+                  } else {
+                    const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
+            await octokit.pulls.create({
+              owner: repoOwner,
+              repo: repoName,
+                      title: prTitle,
+              head: branchName,
+                      base: 'dev',
+                      body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
+            });
+            console.log('PR created successfully');
+                  }
+                } else {
+                  console.log('No code changes detected after AI fix, skipping commit and PR creation.');
+                }
+              } else {
+                console.error('Skipping commit/PR because Java tests failed after AI fix.');
+              }
+              if (!aiFix || aiFix.length < 5) {
+                console.warn('AI could not generate a Java fix. Logging for manual review.');
+            await octokit.issues.createComment({
+                  owner: repoOwner,
+                  repo: repoName,
+              issue_number: issue.number,
+                  body: `:warning: The bot could not automatically fix the Sentry error. Manual intervention is required.\n\nError: ${sentryDetails.error}`
+                });
+              }
+            } else if (repoName === '5x-platform-nextgen-ui') {
+              // === Next.js Frontend Flow ===
+              const normalizedFile = normalizeSentryFilePath(sentryDetails.file);
+              let targetFile = path.join(localPath, normalizedFile);
+              if (!fs.existsSync(targetFile)) {
+                const searchTerm = normalizedFile || sentryDetails.function || sentryDetails.error;
+                const allFiles = glob.sync('**/*.{js,ts,jsx,tsx}', { cwd: localPath, absolute: true });
+                const matchingFiles = allFiles.filter(f => {
+                  try {
+                    const content = fs.readFileSync(f, 'utf8');
+                    return content.includes(searchTerm);
+                  } catch (e) { return false; }
+                });
+                if (matchingFiles.length === 1) {
+                  targetFile = matchingFiles[0];
+                  console.log(`Mapped Sentry file to actual file: ${targetFile}`);
+                } else if (matchingFiles.length > 1) {
+                  targetFile = matchingFiles.sort((a, b) => a.length - b.length)[0];
+                  console.log(`Multiple matches, using: ${targetFile}`);
+                } else {
+                  await octokit.issues.createComment({
+                    owner: repoOwner,
+                    repo: repoName,
+                    issue_number: issue.number,
+                    body: `:warning: The bot could not map the Sentry error ([32m${normalizedFile}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
+                  });
+                  return;
+                }
+              }
+              let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
+              // Extract error details for prompt
+              const exceptionValue = sentryEvent.exception?.values?.[0]?.value || sentryDetails.error || 'Unknown error';
+              const contextLine = sentryDetails.context_line || '';
+              const postContext = Array.isArray(sentryDetails.post_context) ? sentryDetails.post_context.join('\n') : '';
+              // 1. AI Error Analysis
+              const analysisPrompt = `A Sentry error was reported in this file:
+File: ${normalizedFile}
+Line: ${sentryDetails.line}
+Error: ${exceptionValue}
+Context line: ${contextLine}
+Post-context:
+${postContext}
+
+Please analyze the error and suggest what might be causing it and how a developer could fix it.`;
+              const analysisResponse = await openai.chat.completions.create({
+                model: 'gpt-3.5-turbo',
+                messages: [{ role: 'user', content: analysisPrompt }],
+                max_tokens: 500,
+                temperature: 0,
+              });
+              const analysis = analysisResponse.choices[0].message.content.trim();
+              // 2. Post analysis as a comment
+              await octokit.issues.createComment({
+                owner: repoOwner,
+                repo: repoName,
+                issue_number: issue.number,
+                body: `**AI Error Analysis:**\n${analysis}`
+              });
+              // 3. AI Code Fix Prompt
+              const codeBlock = fileContent.slice(Math.max(0, sentryDetails.line - 5), sentryDetails.line + 5).join('\n');
+              const fixPrompt = `A Sentry error was reported in this code block:
+File: ${normalizedFile}
+Line: ${sentryDetails.line}
+Error: ${exceptionValue}
+
+Here is the code block with context:
+\`\`\`js
+${codeBlock}
+\`\`\`
+
+Please return ONLY the fixed version of this code block, making minimal changes needed to resolve the error. Add a clear comment at the location where you make code changes. Do not return the entire file. Return the fixed block in a markdown code block.`;
+              const fixResponse = await openai.chat.completions.create({
+                model: 'gpt-3.5-turbo',
+                messages: [{ role: 'user', content: fixPrompt }],
+                max_tokens: 2000,
+                temperature: 0,
+              });
+              let aiFix = fixResponse.choices[0].message.content.trim();
+              const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
+              if (codeBlockMatch) {
+                aiFix = codeBlockMatch[1].trim();
+              }
+
+              // Apply the fix to the specific block in the file
+              const startLine = Math.max(0, sentryDetails.line - 5);
+              const endLine = sentryDetails.line + 5;
+              const originalBlock = fileContent.slice(startLine, endLine).join('\n');
+              
+              // Compare the original block with the AI fix
+              const changes = diff.diffLines(originalBlock, aiFix);
+              const hasMeaningfulChange = changes.some(change =>
+                (change.added || change.removed) &&
+                change.value.replace(/\s/g, '').length > 0
+              );
+
+              if (hasMeaningfulChange) {
+                // Replace the block in the file content
+                fileContent.splice(startLine, endLine - startLine, ...aiFix.split('\n'));
+                // Write the updated content back to the file
+                fs.writeFileSync(targetFile, fileContent.join('\n'), 'utf8');
+                console.log('AI fix applied to specific block in file:', targetFile);
+                // Proceed with commit and PR logic
                 const repoGit = simpleGit(localPath);
                 // Set git user/email before committing
                 await repoGit.addConfig('user.email', 'divya@5x.co');
@@ -456,169 +675,8 @@ app.post('/webhook', async (req, res) => {
                   console.log('No code changes detected after AI fix, skipping commit and PR creation.');
                 }
               } else {
-                console.error('Skipping commit/PR because Java tests failed after AI fix.');
-              }
-              if (!aiFix || aiFix.length < 5) {
-                console.warn('AI could not generate a Java fix. Logging for manual review.');
-                await octokit.issues.createComment({
-                  owner: repoOwner,
-                  repo: repoName,
-                  issue_number: issue.number,
-                  body: `:warning: The bot could not automatically fix the Sentry error. Manual intervention is required.\n\nError: ${sentryDetails.error}`
-                });
-              }
-            } else if (repoName === '5x-platform-nextgen-ui') {
-              // === Next.js Frontend Flow ===
-              const normalizedFile = normalizeSentryFilePath(sentryDetails.file);
-              let targetFile = path.join(localPath, normalizedFile);
-              if (!fs.existsSync(targetFile)) {
-                const searchTerm = normalizedFile || sentryDetails.function || sentryDetails.error;
-                const allFiles = glob.sync('**/*.{js,ts,jsx,tsx}', { cwd: localPath, absolute: true });
-                const matchingFiles = allFiles.filter(f => {
-                  try {
-                    const content = fs.readFileSync(f, 'utf8');
-                    return content.includes(searchTerm);
-                  } catch (e) { return false; }
-                });
-                if (matchingFiles.length === 1) {
-                  targetFile = matchingFiles[0];
-                  console.log(`Mapped Sentry file to actual file: ${targetFile}`);
-                } else if (matchingFiles.length > 1) {
-                  targetFile = matchingFiles.sort((a, b) => a.length - b.length)[0];
-                  console.log(`Multiple matches, using: ${targetFile}`);
-                } else {
-                  await octokit.issues.createComment({
-                    owner: repoOwner,
-                    repo: repoName,
-                    issue_number: issue.number,
-                    body: `:warning: The bot could not map the Sentry error ([32m${normalizedFile}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
-                  });
-                  return;
-                }
-              }
-              let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Improved AI prompt with full file content, error info, and code change comment instruction
-              const fullFileContent = fs.readFileSync(targetFile, 'utf8');
-              const aiPrompt = `A Sentry error was reported by Sentry in the following file and line:
-File: ${normalizedFile}
-Line: ${sentryDetails.line}
-Error: ${sentryDetails.error}
-
-Here is the complete content of the file:
-${fullFileContent}
-
-Please return the fixed version of the file, making only the minimal changes needed to resolve the error above. Add a clear comment in the file at the location where you make code changes, so reviewers can easily spot the fix. Do not replace or delete unrelated code. Return only the fixed code in a markdown code block.`;
-              console.log('AI Prompt (Improved):', aiPrompt);
-              const gptResponse = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: [{ role: 'user', content: aiPrompt }],
-                max_tokens: 1500,
-                temperature: 0,
-              });
-              console.log('AI Response (Next.js):', gptResponse.choices[0].message.content);
-              let aiFix = gptResponse.choices[0].message.content.trim();
-              const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
-              if (codeBlockMatch) {
-                aiFix = codeBlockMatch[1].trim();
-              }
-              let blockReplaced = false;
-              if (aiFix && aiFix.length > 0) {
-                let nameMatch = aiFix.match(/(?:function|class)\s+([a-zA-Z0-9_]+)/) || aiFix.match(/const\s+([a-zA-Z0-9_]+)\s*=\s*\(/);
-                if (nameMatch) {
-                  const blockName = nameMatch[1];
-                  let blockRegex;
-                  if (/^class /.test(aiFix)) {
-                    blockRegex = new RegExp(`class\\s+${blockName}[^]*?\\n\\}`, 'gm');
-                  } else if (/^function /.test(aiFix)) {
-                    blockRegex = new RegExp(`function\\s+${blockName}[^]*?\\n\\}`, 'gm');
-                  } else {
-                    blockRegex = new RegExp(`const\\s+${blockName}\\s*=\\s*\\([^]*?\\)\\s*=>[^]*?\\n\\}`, 'gm');
-                  }
-                  const origFile = fileContent.join('\n');
-                  const replaced = origFile.replace(blockRegex, aiFix);
-                  if (replaced !== origFile) {
-                    fs.writeFileSync(targetFile, replaced, 'utf8');
-                    blockReplaced = true;
-                    console.log('Targeted block replaced in file.');
-                  }
-                }
-              }
-              if (!blockReplaced && aiFix && aiFix.length > 0) {
-                fs.writeFileSync(targetFile, aiFix, 'utf8');
-                console.log('AI full file fix received and written.');
-              }
-              // Compare AI fix with original file content using diff
-              const originalContent = fs.readFileSync(targetFile, 'utf8').trim();
-              const aiFixTrimmed = aiFix.trim();
-              // Compute the diff
-              const changes = diff.diffLines(originalContent, aiFixTrimmed);
-              // Check if the diff is meaningful (not just deletion or whitespace)
-              const hasMeaningfulChange = changes.some(change =>
-                (change.added || change.removed) &&
-                change.value.replace(/\s/g, '').length > 0
-              );
-              if (hasMeaningfulChange) {
-                fs.writeFileSync(targetFile, aiFixTrimmed, 'utf8');
-                console.log('AI fix applied to file:', targetFile);
-                // Optionally, log the diff for review
-                console.log('Diff:', changes);
-              } else {
-                console.warn('AI fix is not a meaningful change. Skipping file update.');
-              }
-              // Proceed with commit/PR logic for UI
-              const repoGit = simpleGit(localPath);
-              // Set git user/email before committing
-              await repoGit.addConfig('user.email', 'divya@5x.co');
-              await repoGit.addConfig('user.name', 'divyask24');
-              // Robust branch handling
-              await repoGit.fetch();
-              const branches = await repoGit.branch(['-a']);
-              const remoteBranch = `remotes/origin/${branchName}`;
-              try {
-                if (branches.all.includes(branchName)) {
-                  await repoGit.checkout(branchName);
-                  console.log(`Checked out existing local branch: ${branchName}`);
-                } else if (branches.all.includes(remoteBranch)) {
-                  await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
-                  console.log(`Checked out tracking branch from remote: ${branchName}`);
-                } else {
-                  await repoGit.checkoutLocalBranch(branchName);
-                  console.log(`Created and checked out new branch: ${branchName}`);
-                }
-              } catch (branchErr) {
-                console.error('Branch checkout/creation error:', branchErr);
-                throw branchErr;
-              }
-              await repoGit.add(normalizedFile);
-              const status = await repoGit.status();
-              if (status.staged.length > 0) {
-                await repoGit.commit('fix: apply AI-generated fix for Sentry error');
-                // Use a GitHub token with push access
-                await repoGit.push(['-u', remoteWithToken, branchName]);
-                // Check if a PR already exists for this issue (by branch name or issue number in PR body)
-                const existingPRs = await octokit.pulls.list({
-                  owner: repoOwner,
-                  repo: repoName,
-                  state: 'open',
-                  head: `${repoOwner}:${branchName}`
-                });
-                if (existingPRs.data && existingPRs.data.length > 0) {
-                  console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
-                  // Only push if there are changes (already handled above)
-                } else {
-                  const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
-                  await octokit.pulls.create({
-                    owner: repoOwner,
-                    repo: repoName,
-                    title: prTitle,
-                    head: branchName,
-                    base: 'dev',
-                    body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
-                  });
-                  console.log('PR created successfully');
-                }
-              } else {
-                console.log('No code changes detected after AI fix, skipping commit and PR creation.');
+                console.warn('AI fix is not meaningful or is destructive. Skipping file update, commit, and PR.');
+                return;
               }
             } else {
               // ...default/other repo logic or skip...
