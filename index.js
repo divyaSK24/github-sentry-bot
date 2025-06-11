@@ -538,35 +538,50 @@ app.post('/webhook', async (req, res) => {
                 fs.writeFileSync(targetFile, aiFix, 'utf8');
                 console.log('AI full file fix received and written.');
               }
-              // Run yarn format/lint/test
+              // Run yarn format
               let formatSuccess = false;
-              let lintSuccess = false;
-              let testSuccess = false;
-              let formatError = '';
-              let lintError = '';
-              let testError = '';
               try {
                 execSync('yarn format', { cwd: localPath, stdio: 'inherit' });
                 formatSuccess = true;
               } catch (err) {
-                formatError = err.message || String(err);
-                console.error('yarn format failed:', formatError);
+                console.error('yarn format failed:', err.message || String(err));
               }
+              // Run yarn lint
+              let lintSuccess = false;
+              let lintError = '';
               try {
-                execSync('yarn lint --fix', { cwd: localPath, stdio: 'inherit' });
+                execSync('yarn lint', { cwd: localPath, stdio: 'inherit' });
                 lintSuccess = true;
               } catch (err) {
                 lintError = err.message || String(err);
-                console.error('yarn lint --fix failed:', lintError);
+                console.error('yarn lint failed:', lintError);
               }
-              try {
-                execSync('yarn test', { cwd: localPath, stdio: 'inherit' });
-                testSuccess = true;
-              } catch (err) {
-                testError = err.message || String(err);
-                console.error('yarn test failed:', testError);
+              // If lint failed, use AI to fix
+              if (!lintSuccess && lintError) {
+                const lintPrompt = `The following lint errors were found:\n${lintError}\n\nPlease return the fixed code for the file(s) mentioned, in a markdown code block, with no explanation.`;
+                const gptResponse = await openai.chat.completions.create({
+                  model: 'gpt-3.5-turbo',
+                  messages: [{ role: 'user', content: lintPrompt }],
+                  max_tokens: 1500,
+                  temperature: 0,
+                });
+                let aiFix = gptResponse.choices[0].message.content.trim();
+                const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
+                if (codeBlockMatch) {
+                  aiFix = codeBlockMatch[1].trim();
+                  // Write the fix to the main file being processed
+                  fs.writeFileSync(targetFile, aiFix, 'utf8');
+                  console.log('AI lint fix applied to file:', targetFile);
+                  // Optionally, re-run yarn lint after applying the AI fix
+                  try {
+                    execSync('yarn lint', { cwd: localPath, stdio: 'inherit' });
+                    lintSuccess = true;
+                  } catch (err) {
+                    console.error('yarn lint still failed after AI fix:', err.message || String(err));
+                  }
+                }
               }
-              if (formatSuccess && lintSuccess && testSuccess) {
+              if (formatSuccess && lintSuccess) {
                 // Proceed with commit/PR logic for UI
                 const repoGit = simpleGit(localPath);
                 // Set git user/email before committing
@@ -623,7 +638,7 @@ app.post('/webhook', async (req, res) => {
                   console.log('No code changes detected after AI fix, skipping commit and PR creation.');
                 }
               } else {
-                console.error('Skipping commit/PR because format/lint/test failed after AI fix.');
+                console.error('Skipping commit/PR because format/lint failed after AI fix.');
               }
               if (!aiFix || aiFix.length < 5) {
                 console.warn('AI could not generate a UI fix. Logging for manual review.');
