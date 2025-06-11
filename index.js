@@ -207,6 +207,54 @@ function normalizeSentryFilePath(filePath) {
   return filePath;
 }
 
+function extractSrcFrame(sentryEvent) {
+  // 1. Exception stacktrace
+  const exception = sentryEvent.exception?.values?.[0];
+  const frames = exception?.stacktrace?.frames || [];
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const f = frames[i];
+    if (
+      ((f.filename && f.filename.includes('src/') && /\.(js|ts|jsx|tsx)$/.test(f.filename)) ||
+      (f.abs_path && f.abs_path.includes('src/') && /\.(js|ts|jsx|tsx)$/.test(f.abs_path)))
+    ) {
+      return {
+        file: f.filename || f.abs_path,
+        line: f.lineno || null,
+        function: f.function || null
+      };
+    }
+  }
+  // 2. Other fields
+  if (sentryEvent.logentry?.filename) {
+    return { file: sentryEvent.logentry.filename, line: null, function: null };
+  }
+  if (sentryEvent.metadata?.filename) {
+    return { file: sentryEvent.metadata.filename, line: sentryEvent.metadata.line || null, function: null };
+  }
+  if (sentryEvent.culprit) {
+    return { file: sentryEvent.culprit, line: null, function: null };
+  }
+  if (sentryEvent.transaction) {
+    return { file: sentryEvent.transaction, line: null, function: null };
+  }
+  // 3. Fallback: search JSON for src/.*\.(js|ts|jsx|tsx)
+  const jsonString = JSON.stringify(sentryEvent);
+  const match = jsonString.match(/src\/[^"']+\.(js|ts|jsx|tsx)/);
+  if (match) {
+    return { file: match[0], line: null, function: null };
+  }
+  // 4. Fallback: last frame
+  if (frames.length > 0) {
+    const last = frames[frames.length - 1];
+    return {
+      file: last.filename || last.abs_path || null,
+      line: last.lineno || null,
+      function: last.function || null
+    };
+  }
+  return { file: null, line: null, function: null };
+}
+
 app.post('/webhook', async (req, res) => {
   console.log('Webhook received:', {
     event: req.headers['x-github-event'],
