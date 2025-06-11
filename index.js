@@ -193,6 +193,20 @@ function generateSentryAnalysis(details) {
   return `### 🛠️ Sentry Error Analysis\n\n- **Error:** \`${errorType ? errorType + ': ' : ''}${error}\`\n- **File:** \`${file}\`\n- **Line:** \`${line}${col ? ':' + col : ''}\`\n- **Function:** \`${func || ''}\`\n\n**Context:**\n\n\`\`\`js\n${codeContext}\n\`\`\`\n\n**Suggested Fix:**\n${suggestion}`;
 }
 
+function normalizeSentryFilePath(filePath) {
+  if (!filePath) return null;
+  // Remove Sentry/Next.js prefixes
+  filePath = filePath.replace(/^app:\/\//, '');
+  filePath = filePath.replace(/^_next\/static\/chunks\/pages\//, '');
+  filePath = filePath.replace(/^\//, '');
+  // If path starts with 'src/', keep as is
+  if (filePath.startsWith('src/')) return filePath;
+  // Try to extract src path if present
+  const srcIdx = filePath.indexOf('src/');
+  if (srcIdx !== -1) return filePath.slice(srcIdx);
+  return filePath;
+}
+
 app.post('/webhook', async (req, res) => {
   console.log('Webhook received:', {
     event: req.headers['x-github-event'],
@@ -256,9 +270,10 @@ app.post('/webhook', async (req, res) => {
             if (repoName === '5x-platform-nextgen') {
               // === Java Backend Flow ===
               // Map Sentry error to Java file (using endpoint/class/method search)
-              let targetFile = path.join(localPath, sentryDetails.file);
+              const normalizedFile = normalizeSentryFilePath(sentryDetails.file);
+              let targetFile = path.join(localPath, normalizedFile);
               if (!fs.existsSync(targetFile)) {
-                const searchTerm = sentryDetails.file || sentryDetails.function || sentryDetails.error;
+                const searchTerm = normalizedFile || sentryDetails.function || sentryDetails.error;
                 const allFiles = glob.sync('**/*.java', { cwd: localPath, absolute: true });
                 const matchingFiles = allFiles.filter(f => {
                   try {
@@ -277,14 +292,14 @@ app.post('/webhook', async (req, res) => {
                     owner: repoOwner,
                     repo: repoName,
                     issue_number: issue.number,
-                    body: `:warning: The bot could not map the Sentry error ([32m${sentryDetails.file}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
+                    body: `:warning: The bot could not map the Sentry error ([32m${normalizedFile}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
                   });
                   return;
                 }
               }
               let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
               // Java-specific AI prompt
-              const aiPrompt = `A Sentry error was reported in the following Java file and line.\nFile: ${sentryDetails.file}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent.join('\n')}\n\nIf the fix can be made by updating a single Java method or class, return ONLY that complete method or class (with its signature) in a markdown code block. If the fix requires changes in multiple places or is ambiguous, return the entire corrected Java file in a markdown code block.`;
+              const aiPrompt = `A Sentry error was reported in the following Java file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent.join('\n')}\n\nIf the fix can be made by updating a single Java method or class, return ONLY that complete method or class (with its signature) in a markdown code block. If the fix requires changes in multiple places or is ambiguous, return the entire corrected Java file in a markdown code block.`;
               const combinedResponse = await openai.chat.completions.create({
                 model: 'gpt-3.5-turbo-1106',
                 messages: [{ role: 'user', content: aiPrompt }],
@@ -353,7 +368,7 @@ app.post('/webhook', async (req, res) => {
                   console.error('Branch checkout/creation error:', branchErr);
                   throw branchErr;
                 }
-                await repoGit.add(sentryDetails.file);
+                await repoGit.add(normalizedFile);
                 const status = await repoGit.status();
                 if (status.staged.length > 0) {
                   await repoGit.commit('fix: apply AI-generated fix for Sentry error');
@@ -398,9 +413,10 @@ app.post('/webhook', async (req, res) => {
               }
             } else if (repoName === '5x-platform-nextgen-ui') {
               // === Next.js Frontend Flow ===
-              let targetFile = path.join(localPath, sentryDetails.file);
+              const normalizedFile = normalizeSentryFilePath(sentryDetails.file);
+              let targetFile = path.join(localPath, normalizedFile);
               if (!fs.existsSync(targetFile)) {
-                const searchTerm = sentryDetails.file || sentryDetails.function || sentryDetails.error;
+                const searchTerm = normalizedFile || sentryDetails.function || sentryDetails.error;
                 const allFiles = glob.sync('**/*.{js,ts,jsx,tsx}', { cwd: localPath, absolute: true });
                 const matchingFiles = allFiles.filter(f => {
                   try {
@@ -419,14 +435,14 @@ app.post('/webhook', async (req, res) => {
                     owner: repoOwner,
                     repo: repoName,
                     issue_number: issue.number,
-                    body: `:warning: The bot could not map the Sentry error ([32m${sentryDetails.file}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
+                    body: `:warning: The bot could not map the Sentry error ([32m${normalizedFile}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
                   });
                   return;
                 }
               }
               let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
               // Next.js/JS/TS-specific AI prompt
-              const aiPrompt = `A Sentry error was reported in the following file and line.\nFile: ${sentryDetails.file}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent.join('\n')}\n\nIf the fix can be made by updating a single function, class, or code block, return ONLY that complete block (with its name/signature) in a markdown code block. If the fix requires changes in multiple places or is ambiguous, return the entire corrected file in a markdown code block.`;
+              const aiPrompt = `A Sentry error was reported in the following file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the file content:\n\n${fileContent.join('\n')}\n\nIf the fix can be made by updating a single function, class, or code block, return ONLY that complete block (with its name/signature) in a markdown code block. If the fix requires changes in multiple places or is ambiguous, return the entire corrected file in a markdown code block.`;
               const combinedResponse = await openai.chat.completions.create({
                 model: 'gpt-3.5-turbo-1106',
                 messages: [{ role: 'user', content: aiPrompt }],
@@ -516,7 +532,7 @@ app.post('/webhook', async (req, res) => {
                   console.error('Branch checkout/creation error:', branchErr);
                   throw branchErr;
                 }
-                await repoGit.add(sentryDetails.file);
+                await repoGit.add(normalizedFile);
                 const status = await repoGit.status();
                 if (status.staged.length > 0) {
                   await repoGit.commit('fix: apply AI-generated fix for Sentry error');
