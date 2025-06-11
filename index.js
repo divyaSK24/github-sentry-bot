@@ -25,8 +25,22 @@ function parseSentryDetails(sentryEvent) {
     // 1. Try exception stacktrace frames
     const exception = sentryEvent.exception?.values?.[0];
     const frames = exception?.stacktrace?.frames;
-    // Get the first frame where the error occurred
-    let errorFrame = frames && frames.length > 0 ? frames[0] : null;
+    
+    // Find the first frame that's in our application code
+    let errorFrame = null;
+    if (frames && frames.length > 0) {
+      for (const frame of frames) {
+        const framePath = frame.filename || frame.abs_path || frame.module;
+        if (framePath && framePath.includes('src/') && frame.in_app !== false) {
+          errorFrame = frame;
+          break;
+        }
+      }
+      // If no src/ frame found, use the first frame
+      if (!errorFrame) {
+        errorFrame = frames[0];
+      }
+    }
 
     let file = errorFrame?.filename || errorFrame?.abs_path || errorFrame?.module || null;
     let line = errorFrame?.lineno || null;
@@ -38,7 +52,7 @@ function parseSentryDetails(sentryEvent) {
     let errorType = exception?.type || null;
     let error = exception?.value || null;
 
-    // If we can't find the error in the first frame, try to find a frame with source code
+    // If we still can't find the error in our code, try to find any frame with source code
     if (!file || !line) {
       for (const frame of frames || []) {
         if (frame.filename && frame.lineno) {
