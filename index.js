@@ -26,19 +26,48 @@ function parseSentryDetails(sentryEvent) {
     const exception = sentryEvent.exception?.values?.[0];
     const frames = exception?.stacktrace?.frames;
     
-    // Find the first frame that's in our application code
+    // Find all frames that are in our application code
+    let errorFrames = [];
     let errorFrame = null;
     if (frames && frames.length > 0) {
       for (const frame of frames) {
         const framePath = frame.filename || frame.abs_path || frame.module;
-        if (framePath && framePath.includes('src/') && frame.in_app !== false) {
-          errorFrame = frame;
-          break;
+        // Check if it's our application code and has source context
+        if (framePath && 
+            framePath.includes('src/') && 
+            frame.in_app !== false && 
+            (frame.pre_context || frame.context_line || frame.post_context)) {
+          const frameData = {
+            file: framePath,
+            line: frame.lineno,
+            col: frame.colno,
+            func: frame.function,
+            pre_context: frame.pre_context || [],
+            context_line: frame.context_line || '',
+            post_context: frame.post_context || [],
+            // Add additional context if available
+            vars: frame.vars || {},
+            data: frame.data || {}
+          };
+          errorFrames.push(frameData);
+          // Keep the first matching frame as the primary error frame
+          if (!errorFrame) {
+            errorFrame = frame;
+          }
         }
       }
-      // If no src/ frame found, use the first frame
+      // If no src/ frame found, use the first frame with context
       if (!errorFrame) {
-        errorFrame = frames[0];
+        for (const frame of frames) {
+          if (frame.pre_context || frame.context_line || frame.post_context) {
+            errorFrame = frame;
+            break;
+          }
+        }
+        // If still no frame with context, use the first frame
+        if (!errorFrame) {
+          errorFrame = frames[0];
+        }
       }
     }
 
@@ -136,7 +165,8 @@ function parseSentryDetails(sentryEvent) {
       category,
       pre_context,
       context_line,
-      post_context
+      post_context,
+      errorFrames // Include all in_app frames for context
     };
   } catch (e) {
     console.error('Error parsing Sentry details:', e);
@@ -149,7 +179,8 @@ function parseSentryDetails(sentryEvent) {
       category: null,
       pre_context: [],
       context_line: '',
-      post_context: []
+      post_context: [],
+      errorFrames: []
     };
   }
 }
@@ -320,6 +351,31 @@ function extractSrcFrame(sentryEvent) {
   }
   return { file: null, line: null, function: null };
 }
+
+// Update the AI prompt to include all error frames with better formatting
+const formatFrameContext = (frame) => {
+  const context = [
+    ...frame.pre_context,
+    frame.context_line ? `>> ${frame.context_line}` : '',
+    ...frame.post_context
+  ].filter(Boolean).join('\n');
+
+  return `
+File: ${frame.file}
+Line: ${frame.line}${frame.col ? `:${frame.col}` : ''}
+Function: ${frame.func || 'unknown'}
+
+Code Context:
+\`\`\`js
+${context}
+\`\`\`
+${frame.vars && Object.keys(frame.vars).length > 0 ? `
+Variables:
+\`\`\`js
+${JSON.stringify(frame.vars, null, 2)}
+\`\`\`
+` : ''}`;
+};
 
 app.post('/webhook', async (req, res) => {
   console.log('Webhook received:', {
@@ -591,18 +647,29 @@ Please analyze the error and suggest what might be causing it and how a develope
                 body: `**AI Error Analysis:**\n${analysis}`
               });
               // 3. AI Code Fix Prompt
-              const codeBlock = fileContent.slice(Math.max(0, sentryDetails.line - 5), sentryDetails.line + 5).join('\n');
-              const fixPrompt = `A Sentry error was reported in this code block:
-File: ${normalizedFile}
-Line: ${sentryDetails.line}
-Error: ${exceptionValue}
+              const fixPrompt = `A Sentry error was reported in our application:
+Error Type: ${sentryDetails.errorType}
+Error Message: ${exceptionValue}
 
-Here is the code block with context:
-\`\`\`js
-${codeBlock}
-\`\`\`
+Primary Error Location:
+${formatFrameContext({
+  file: normalizedFile,
+  line: sentryDetails.line,
+  col: sentryDetails.col,
+  func: sentryDetails.function,
+  pre_context: sentryDetails.pre_context,
+  context_line: sentryDetails.context_line,
+  post_context: sentryDetails.post_context
+})}
 
-Please return ONLY the fixed version of this code block, making minimal changes needed to resolve the error. Add a clear comment at the location where you make code changes. Do not return the entire file. Return the fixed block in a markdown code block.`;
+Full Call Stack:
+${sentryDetails.errorFrames.map(frame => formatFrameContext(frame)).join('\n---\n')}
+
+Please analyze the error and suggest a fix. Focus on the primary error location, but consider the full call stack for context. The fix should:
+1. Address the root cause of the error
+2. Handle any edge cases shown in the call stack
+3. Include appropriate error handling
+4. Add a comment explaining the fix`;
               const fixResponse = await openai.chat.completions.create({
                 model: 'gpt-3.5-turbo',
                 messages: [{ role: 'user', content: fixPrompt }],
