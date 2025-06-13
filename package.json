@@ -1,26 +1,27 @@
 {
   "name": "github-sentry-bot",
   "version": "1.0.0",
-  "description": "",
+  "description": "A bot that analyzes Sentry errors and suggests fixes",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "bito": "bito"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@octokit/rest": "^22.0.0",
-    "@sentry/node": "^9.25.0",
-    "body-parser": "^2.2.0",
+    "body-parser": "^2.0.0",
     "diff": "^8.0.2",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "glob": "^11.0.2",
     "node-fetch": "^3.3.2",
     "openai": "^5.1.0",
-    "simple-git": "^3.27.0",
-    "@bito/cli": "latest"
+    "simple-git": "^3.27.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }
