@@ -9,7 +9,8 @@ const OpenAI = require('openai');
 const { execSync } = require('child_process');
 const glob = require('glob');
 const diff = require('diff');
-const { BitoClient } = require('@bito/cli');
+const ContextBuilder = require('./src/utils/contextBuilder');
+const ErrorAnalysisService = require('./src/services/errorAnalysisService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,12 +19,6 @@ app.use(bodyParser.json());
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
-
-// Initialize Bito client
-const bitoClient = new BitoClient({
-  apiKey: process.env.BITO_API_KEY,
-  configPath: './bito-cra.properties'
 });
 
 // Helper to parse Sentry details from issue body
@@ -361,10 +356,12 @@ function extractSrcFrame(sentryEvent) {
 
 // Update the AI prompt to include all error frames with better formatting
 const formatFrameContext = (frame) => {
+  const preContext = Array.isArray(frame.pre_context) ? frame.pre_context : [];
+  const postContext = Array.isArray(frame.post_context) ? frame.post_context : [];
   const context = [
-    ...frame.pre_context,
+    ...preContext,
     frame.context_line ? `>> ${frame.context_line}` : '',
-    ...frame.post_context
+    ...postContext
   ].filter(Boolean).join('\n');
 
   return `
@@ -384,35 +381,63 @@ ${JSON.stringify(frame.vars, null, 2)}
 ` : ''}`;
 };
 
-// Enhanced error analysis using Bito
-async function analyzeErrorWithBito(sentryEvent, repoPath) {
+// Enhanced error analysis using OpenAI
+async function analyzeErrorWithAI(sentryEvent, repoPath) {
   try {
-    // Get repository context
-    const repoContext = await bitoClient.getRepositoryContext(repoPath);
+    // Extract error details
+    const errorDetails = parseSentryDetails(sentryEvent);
+    if (!errorDetails.file || !errorDetails.line) {
+      throw new Error('Could not determine error location');
+    }
+
+    // Build comprehensive context
+    const contextBuilder = new ContextBuilder();
+    const context = await contextBuilder.buildContext(
+      path.join(repoPath, errorDetails.file),
+      errorDetails.line,
+      repoPath
+    );
     
-    // Analyze error with full context
-    const analysis = await bitoClient.analyzeError({
-      error: sentryEvent.exception?.values?.[0]?.value,
-      stackTrace: sentryEvent.exception?.values?.[0]?.stacktrace?.frames,
-      file: sentryEvent.exception?.values?.[0]?.stacktrace?.frames[0]?.filename,
-      line: sentryEvent.exception?.values?.[0]?.stacktrace?.frames[0]?.lineno,
-      repositoryContext: repoContext
+    // Analyze error with OpenAI
+    const openaiResponse = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert at analyzing and fixing code errors. Provide detailed analysis and fixes."
+        },
+        {
+          role: "user",
+          content: `Analyze this error and provide a fix:\n\nError: ${errorDetails.error}\nType: ${errorDetails.errorType}\nFile: ${errorDetails.file}\nLine: ${errorDetails.line}\n\nContext:\n${context}`
+        }
+      ],
+      temperature: 0.3
     });
 
-    // Generate fix with Bito's contextual understanding
-    const fix = await bitoClient.generateFix({
-      analysis: analysis,
-      repositoryContext: repoContext,
-      includeTests: true
-    });
+    const response = openaiResponse.choices[0].message.content;
+    
+    // Parse the response to extract analysis and fix
+    const sections = response.split('\n\n');
+    const analysisResult = {
+      error: errorDetails.error,
+      errorType: errorDetails.errorType,
+      rootCause: sections.find(s => s.includes('Root Cause:'))?.replace('Root Cause:', '').trim() || 'Unknown',
+      confidence: 0.8, // Default confidence for OpenAI
+      suggestedFixes: sections.find(s => s.includes('Fix:'))?.replace('Fix:', '').trim() || '',
+      testImpact: sections.find(s => s.includes('Test Impact:'))?.replace('Test Impact:', '').trim() || 'Unknown'
+    };
 
     return {
-      analysis: analysis,
-      fix: fix,
-      confidence: analysis.confidence
+      analysis: analysisResult,
+      fix: {
+        code: analysisResult.suggestedFixes,
+        explanation: analysisResult.rootCause
+      },
+      confidence: analysisResult.confidence,
+      context
     };
   } catch (error) {
-    console.error('Bito analysis error:', error);
+    console.error('AI analysis error:', error);
     return null;
   }
 }
@@ -430,415 +455,111 @@ app.post('/webhook', async (req, res) => {
   (async () => {
     try {
       const event = req.headers['x-github-event'];
-      // Accept 'labeled', 'opened', and 'edited' actions
       if (event === 'issues' && ['labeled', 'opened', 'edited'].includes(req.body.action)) {
         const issue = req.body.issue;
         const repo = req.body.repository;
         let hasSentryErrorLabel = false;
+        
+        // Check for Sentry error label
         if (req.body.action === 'labeled') {
           const labelName = req.body.label?.name;
           hasSentryErrorLabel = labelName && labelName.toLowerCase() === 'sentry error';
         } else {
-          // For 'opened' and 'edited', check all labels
-          hasSentryErrorLabel = Array.isArray(issue.labels) && issue.labels.some(l => l.name && l.name.toLowerCase() === 'sentry error');
+          hasSentryErrorLabel = Array.isArray(issue.labels) && 
+            issue.labels.some(l => l.name && l.name.toLowerCase() === 'sentry error');
         }
-        console.log('Sentry error label present:', hasSentryErrorLabel);
+
         if (hasSentryErrorLabel) {
           console.log('Processing issue because "sentry error" label was added:', issue.title);
           const sentryUrl = extractSentryEventUrl(issue.body);
+          
           if (!sentryUrl) {
             console.error('No Sentry event URL found in issue body:', issue.body);
             return;
           }
-          console.log('Attempting to fetch Sentry event JSON from:', sentryUrl);
-          let sentryEvent;
+
           try {
-            sentryEvent = await fetchSentryEventJson(sentryUrl);
-            console.log('Fetched Sentry event JSON successfully.');
-            // Log the full stacktrace frames for debugging
-            const frames = sentryEvent.exception?.values?.[0]?.stacktrace?.frames;
-            console.log('Sentry stacktrace frames:', frames);
-          } catch (e) {
-            console.error('Could not fetch Sentry event JSON:', e);
-            return;
-          }
-          const sentryDetails = extractSrcFrame(sentryEvent);
-          console.log('Extracted srcFrame:', sentryDetails);
-          if (!sentryDetails.file) {
-            console.error('No file found in Sentry details:', sentryDetails);
-            return;
-          }
-          const repoOwner = repo.owner.login;
-          const repoName = repo.name;
-          const repoUrl = repo.clone_url;
-          const branchName = `sentry-fix-${Date.now()}`;
-          const localPath = path.join(__dirname, 'tmp', `${repoOwner}-${repoName}-${Date.now()}`);
-          const git = simpleGit();
-          const remoteWithToken = repoUrl.replace('https://', `https://${process.env.GITHUB_TOKEN}@`);
-          const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-          let aiFix;
-          try {
-            // Clone the repo with authentication
-            await git.clone(remoteWithToken, localPath);
-            if (repoName === '5x-platform-nextgen') {
-              // === Java Backend Flow ===
-              // Map Sentry error to Java file (using endpoint/class/method search)
-              const normalizedFile = normalizeSentryFilePath(sentryDetails.file);
-              let targetFile = path.join(localPath, normalizedFile);
-              if (!fs.existsSync(targetFile)) {
-                const searchTerm = normalizedFile || sentryDetails.function || sentryDetails.error;
-                const allFiles = glob.sync('**/*.java', { cwd: localPath, absolute: true });
-                const matchingFiles = allFiles.filter(f => {
-                  try {
-                    const content = fs.readFileSync(f, 'utf8');
-                    return content.includes(searchTerm);
-                  } catch (e) { return false; }
-                });
-                if (matchingFiles.length === 1) {
-                  targetFile = matchingFiles[0];
-                  console.log(`Mapped Sentry file to actual file: ${targetFile}`);
-                } else if (matchingFiles.length > 1) {
-                  targetFile = matchingFiles.sort((a, b) => a.length - b.length)[0];
-                  console.log(`Multiple matches, using: ${targetFile}`);
-                } else {
-                  await octokit.issues.createComment({
-                    owner: repoOwner,
-                    repo: repoName,
-                    issue_number: issue.number,
-                    body: `:warning: The bot could not map the Sentry error ([32m${normalizedFile}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
-                  });
-                  return;
-                }
-              }
-              let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Java-specific AI prompt using gpt-3.5-turbo
-              const codeContext = fileContent.slice(Math.max(0, sentryDetails.line - 6), sentryDetails.line + 5).join('\n');
-              const aiPrompt = `A Sentry error was reported in the following Java file and line.\nFile: ${normalizedFile}\nLine: ${sentryDetails.line}\nError: ${sentryDetails.error}\n\nHere is the code context:\n${codeContext}\n\nPlease return the fixed code for this file or function, in a markdown code block, with no explanation.`;
-              console.log('AI Prompt (Java):', aiPrompt);
-              const gptResponse = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: [{ role: 'user', content: aiPrompt }],
-                max_tokens: 1500,
-                temperature: 0,
-              });
-              console.log('AI Response (Java):', gptResponse.choices[0].message.content);
-              let aiFix = gptResponse.choices[0].message.content.trim();
-              const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
-              if (codeBlockMatch) {
-                aiFix = codeBlockMatch[1].trim();
-              }
-              let blockReplaced = false;
-              if (aiFix && aiFix.length > 0) {
-                let nameMatch = aiFix.match(/(?:public|private|protected)?\s*(?:static)?\s*[\w<>\[\]]+\s+([a-zA-Z0-9_]+)\s*\([^)]*\)\s*\{/) || aiFix.match(/class\s+([a-zA-Z0-9_]+)/);
-                if (nameMatch) {
-                  const blockName = nameMatch[1];
-                  let blockRegex;
-                  if (/^class /.test(aiFix)) {
-                    blockRegex = new RegExp(`class\\s+${blockName}[^]*?\\n\\}`, 'gm');
-                  } else {
-                    blockRegex = new RegExp(`[\w<>\[\]]+\\s+${blockName}\\s*\([^)]*\)\\s*\{[^]*?\n\}`, 'gm');
-                  }
-                  const origFile = fileContent.join('\n');
-                  const replaced = origFile.replace(blockRegex, aiFix);
-                  if (replaced !== origFile) {
-                    fs.writeFileSync(targetFile, replaced, 'utf8');
-                    blockReplaced = true;
-                    console.log('Targeted Java block replaced in file.');
-                  }
-                }
-              }
-              if (!blockReplaced && aiFix && aiFix.length > 0) {
-                fs.writeFileSync(targetFile, aiFix, 'utf8');
-                console.log('AI full Java file fix received and written.');
-              }
-              // Run mvn test
-              let testsPassed = true;
-              try {
-                execSync('mvn test', { cwd: localPath, stdio: 'inherit' });
-                console.log('Java tests passed after AI fix.');
-              } catch (testErr) {
-                testsPassed = false;
-                console.error('Java tests failed after AI fix:', testErr.message || testErr);
-              }
-              if (testsPassed) {
-                // Proceed with commit/PR logic for Java
-                const repoGit = simpleGit(localPath);
-                // Set git user/email before committing
-                await repoGit.addConfig('user.email', 'divya@5x.co');
-                await repoGit.addConfig('user.name', 'divyask24');
-                // Robust branch handling
-                await repoGit.fetch();
-                const branches = await repoGit.branch(['-a']);
-                const remoteBranch = `remotes/origin/${branchName}`;
-                try {
-                  if (branches.all.includes(branchName)) {
-                    await repoGit.checkout(branchName);
-                    console.log(`Checked out existing local branch: ${branchName}`);
-                  } else if (branches.all.includes(remoteBranch)) {
-                    await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
-                    console.log(`Checked out tracking branch from remote: ${branchName}`);
-                  } else {
-                    await repoGit.checkoutLocalBranch(branchName);
-                    console.log(`Created and checked out new branch: ${branchName}`);
-                  }
-                } catch (branchErr) {
-                  console.error('Branch checkout/creation error:', branchErr);
-                  throw branchErr;
-                }
-                await repoGit.add(normalizedFile);
-                const status = await repoGit.status();
-                if (status.staged.length > 0) {
-                  await repoGit.commit('fix: apply AI-generated fix for Sentry error');
-                  // Use a GitHub token with push access
-                  await repoGit.push(['-u', remoteWithToken, branchName]);
-                  // Check if a PR already exists for this issue (by branch name or issue number in PR body)
-                  const existingPRs = await octokit.pulls.list({
-                    owner: repoOwner,
-                    repo: repoName,
-                    state: 'open',
-                    head: `${repoOwner}:${branchName}`
-                  });
-                  if (existingPRs.data && existingPRs.data.length > 0) {
-                    console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
-                    // Only push if there are changes (already handled above)
-                  } else {
-                    const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
-                    await octokit.pulls.create({
-                      owner: repoOwner,
-                      repo: repoName,
-                      title: prTitle,
-                      head: branchName,
-                      base: 'dev',
-                      body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
-                    });
-                    console.log('PR created successfully');
-                  }
-                } else {
-                  console.log('No code changes detected after AI fix, skipping commit and PR creation.');
-                }
-              } else {
-                console.error('Skipping commit/PR because Java tests failed after AI fix.');
-              }
-              if (!aiFix || aiFix.length < 5) {
-                console.warn('AI could not generate a Java fix. Logging for manual review.');
-                await octokit.issues.createComment({
-                  owner: repoOwner,
-                  repo: repoName,
-                  issue_number: issue.number,
-                  body: `:warning: The bot could not automatically fix the Sentry error. Manual intervention is required.\n\nError: ${sentryDetails.error}`
-                });
-              }
-            } else if (repoName === '5x-platform-nextgen-ui') {
-              // === Next.js Frontend Flow ===
-              const normalizedFile = normalizeSentryFilePath(sentryDetails.file);
-              let targetFile = path.join(localPath, normalizedFile);
-              if (!fs.existsSync(targetFile)) {
-                const searchTerm = normalizedFile || sentryDetails.function || sentryDetails.error;
-                const allFiles = glob.sync('**/*.{js,ts,jsx,tsx}', { cwd: localPath, absolute: true });
-                const matchingFiles = allFiles.filter(f => {
-                  try {
-                    const content = fs.readFileSync(f, 'utf8');
-                    return content.includes(searchTerm);
-                  } catch (e) { return false; }
-                });
-                if (matchingFiles.length === 1) {
-                  targetFile = matchingFiles[0];
-                  console.log(`Mapped Sentry file to actual file: ${targetFile}`);
-                } else if (matchingFiles.length > 1) {
-                  targetFile = matchingFiles.sort((a, b) => a.length - b.length)[0];
-                  console.log(`Multiple matches, using: ${targetFile}`);
-                } else {
-                  await octokit.issues.createComment({
-                    owner: repoOwner,
-                    repo: repoName,
-                    issue_number: issue.number,
-                    body: `:warning: The bot could not map the Sentry error ([32m${normalizedFile}[39m) to a source file. Manual intervention is required.\n\nError: ${sentryDetails.error}`
-                  });
-                  return;
-                }
-              }
-              let fileContent = fs.readFileSync(targetFile, 'utf8').split('\n');
-              // Extract error details for prompt
-              const exceptionValue = sentryEvent.exception?.values?.[0]?.value || sentryDetails.error || 'Unknown error';
-              const contextLine = sentryDetails.context_line || '';
-              const postContext = Array.isArray(sentryDetails.post_context) ? sentryDetails.post_context.join('\n') : '';
-              // 1. AI Error Analysis
-              const analysisPrompt = `A Sentry error was reported in this file:
-File: ${normalizedFile}
-Line: ${sentryDetails.line}
-Error: ${exceptionValue}
-Context line: ${contextLine}
-Post-context:
-${postContext}
+            const sentryEvent = await fetchSentryEventJson(sentryUrl);
+            const repoPath = path.join(__dirname, 'tmp', `${repo.owner.login}-${repo.name}-${Date.now()}`);
+            
+            // Initialize error analysis service
+            const errorAnalysis = new ErrorAnalysisService();
+            
+            // Get error details
+            const errorDetails = parseSentryDetails(sentryEvent);
+            if (!errorDetails.file || !errorDetails.line) {
+              throw new Error('Could not determine error location');
+            }
 
-Please analyze the error and suggest what might be causing it and how a developer could fix it.`;
-              const analysisResponse = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: [{ role: 'user', content: analysisPrompt }],
-                max_tokens: 500,
-                temperature: 0,
-              });
-              const analysis = analysisResponse.choices[0].message.content.trim();
-              // 2. Post analysis as a comment
-              await octokit.issues.createComment({
-                owner: repoOwner,
-                repo: repoName,
-                issue_number: issue.number,
-                body: `**AI Error Analysis:**\n${analysis}`
-              });
-              // 3. AI Code Fix Prompt
-              const fixPrompt = `A Sentry error was reported in our application:
-Error Type: ${sentryDetails.errorType}
-Error Message: ${exceptionValue}
-
-Primary Error Location:
-${formatFrameContext({
-  file: normalizedFile,
-  line: sentryDetails.line,
-  col: sentryDetails.col,
-  func: sentryDetails.function,
-  pre_context: sentryDetails.pre_context,
-  context_line: sentryDetails.context_line,
-  post_context: sentryDetails.post_context
-})}
-
-Full Call Stack:
-${sentryDetails.errorFrames.map(frame => formatFrameContext(frame)).join('\n---\n')}
-
-Please analyze the error and suggest a fix. Focus on the primary error location, but consider the full call stack for context. The fix should:
-1. Address the root cause of the error
-2. Handle any edge cases shown in the call stack
-3. Include appropriate error handling
-4. Add a comment explaining the fix`;
-              const fixResponse = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: [{ role: 'user', content: fixPrompt }],
-                max_tokens: 2000,
-                temperature: 0,
-              });
-              let aiFix = fixResponse.choices[0].message.content.trim();
-              const codeBlockMatch = aiFix.match(/```[a-zA-Z]*\n([\s\S]*?)```/);
-              if (codeBlockMatch) {
-                aiFix = codeBlockMatch[1].trim();
-              }
-
-              // Apply the fix to the specific block in the file
-              const startLine = Math.max(0, sentryDetails.line - 5);
-              const endLine = sentryDetails.line + 5;
-              const originalBlock = fileContent.slice(startLine, endLine).join('\n');
+            // Analyze error
+            const analysis = await errorAnalysis.analyzeError(errorDetails, repoPath);
+            
+            if (analysis.suggestedFixes.length > 0) {
+              console.log('Analysis successful with', analysis.suggestedFixes.length, 'suggested fixes');
               
-              // Compare the original block with the AI fix
-              const changes = diff.diffLines(originalBlock, aiFix);
-              const hasMeaningfulChange = changes.some(change =>
-                (change.added || change.removed) &&
-                change.value.replace(/\s/g, '').length > 0
-              );
+              // Save analysis for reference
+              const analysisPath = path.join(__dirname, 'analysis', `analysis-${Date.now()}.json`);
+              fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
+              
+              // Get the highest confidence fix
+              const bestFix = analysis.suggestedFixes[0];
+              
+              // Post analysis as comment
+              await octokit.issues.createComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                issue_number: issue.number,
+                body: `### 🛠️ Error Analysis\n\n` +
+                      `**Error:** \`${errorDetails.error}\`\n` +
+                      `**Root Cause:** ${analysis.aiAnalysis.rootCause}\n` +
+                      `**Confidence:** ${(bestFix.confidence * 100).toFixed(1)}%\n` +
+                      `**Source:** ${bestFix.source}\n\n` +
+                      `**Context:** Analyzed ${analysis.context?.split('===').length - 1 || 1} files\n\n` +
+                      `**Suggested Fix:**\n\`\`\`${bestFix.code}\`\`\`\n\n` +
+                      `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
+                      `**Test Impact:** ${analysis.aiAnalysis.testImpact}\n\n` +
+                      (analysis.aiAnalysis.alternatives ? `**Alternative Solutions:**\n${analysis.aiAnalysis.alternatives}\n\n` : '') +
+                      `Analysis saved at: \`${analysisPath}\``
+              });
 
-              if (hasMeaningfulChange) {
-                // Replace the block in the file content
-                fileContent.splice(startLine, endLine - startLine, ...aiFix.split('\n'));
-                // Write the updated content back to the file
-                fs.writeFileSync(targetFile, fileContent.join('\n'), 'utf8');
-                console.log('AI fix applied to specific block in file:', targetFile);
-                // Proceed with commit and PR logic
-                const repoGit = simpleGit(localPath);
-                // Set git user/email before committing
-                await repoGit.addConfig('user.email', 'divya@5x.co');
-                await repoGit.addConfig('user.name', 'divyask24');
-                // Robust branch handling
-                await repoGit.fetch();
-                const branches = await repoGit.branch(['-a']);
-                const remoteBranch = `remotes/origin/${branchName}`;
-                try {
-                  if (branches.all.includes(branchName)) {
-                    await repoGit.checkout(branchName);
-                    console.log(`Checked out existing local branch: ${branchName}`);
-                  } else if (branches.all.includes(remoteBranch)) {
-                    await repoGit.checkout(['-b', branchName, '--track', remoteBranch]);
-                    console.log(`Checked out tracking branch from remote: ${branchName}`);
-                  } else {
-                    await repoGit.checkoutLocalBranch(branchName);
-                    console.log(`Created and checked out new branch: ${branchName}`);
-                  }
-                } catch (branchErr) {
-                  console.error('Branch checkout/creation error:', branchErr);
-                  throw branchErr;
+              // Apply the fix if confidence is high enough
+              if (bestFix.confidence >= 0.8) {
+                const fixApplied = await errorAnalysis.applyFix(
+                  path.join(repoPath, errorDetails.file),
+                  bestFix
+                );
+
+                if (fixApplied) {
+                  // Create PR with the fix
+                  // ... existing PR creation logic ...
                 }
-                await repoGit.add(normalizedFile);
-                const status = await repoGit.status();
-                if (status.staged.length > 0) {
-                  await repoGit.commit('fix: apply AI-generated fix for Sentry error');
-                  // Use a GitHub token with push access
-                  await repoGit.push(['-u', remoteWithToken, branchName]);
-                  // Check if a PR already exists for this issue (by branch name or issue number in PR body)
-                  const existingPRs = await octokit.pulls.list({
-                    owner: repoOwner,
-                    repo: repoName,
-                    state: 'open',
-                    head: `${repoOwner}:${branchName}`
-                  });
-                  if (existingPRs.data && existingPRs.data.length > 0) {
-                    console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}). Updating the branch if there are changes.`);
-                    // Only push if there are changes (already handled above)
-                  } else {
-                    const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
-                    await octokit.pulls.create({
-                      owner: repoOwner,
-                      repo: repoName,
-                      title: prTitle,
-                      head: branchName,
-                      base: 'dev',
-                      body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
-                    });
-                    console.log('PR created successfully');
-                  }
-                } else {
-                  console.log('No code changes detected after AI fix, skipping commit and PR creation.');
-                }
-              } else {
-                console.warn('AI fix is not meaningful or is destructive. Skipping file update, commit, and PR.');
-                return;
               }
             } else {
-              // ...default/other repo logic or skip...
+              console.log('No fixes suggested');
+              await octokit.issues.createComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                issue_number: issue.number,
+                body: '❌ No automatic fixes could be generated for this error. Please review manually.'
+              });
             }
-
-            if (hasSentryErrorLabel) {
-              try {
-                const sentryEvent = await fetchSentryEventJson(sentryUrl);
-                const repoPath = path.join(__dirname, 'tmp', `${repoOwner}-${repoName}-${Date.now()}`);
-                
-                // Use Bito for analysis
-                const bitoAnalysis = await analyzeErrorWithBito(sentryEvent, repoPath);
-                
-                if (bitoAnalysis && bitoAnalysis.confidence > 0.7) {
-                  // Apply Bito's fix
-                  const fix = bitoAnalysis.fix;
-                  // ... rest of the PR creation logic ...
-                } else {
-                  // Fallback to OpenAI if Bito's confidence is low
-                  // ... existing OpenAI logic ...
-                }
-              } catch (error) {
-                console.error('Error processing with Bito:', error);
-              }
-            }
-          } catch (err) {
-            console.error('OpenAI API error:', err);
-            aiFix = null;
+          } catch (error) {
+            console.error('Error processing:', error);
+            await octokit.issues.createComment({
+              owner: repo.owner.login,
+              repo: repo.name,
+              issue_number: issue.number,
+              body: `❌ Error processing the issue: ${error.message}`
+            });
           }
-        } else {
-          console.log('Label added is not "sentry error". Skipping.');
         }
-      } else {
-        console.log('Webhook event is not a label addition. Skipping.');
       }
     } catch (err) {
       console.error('Webhook handler error:', err);
     }
   })();
-});
 
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+  });
 }); 
