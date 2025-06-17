@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const simpleGit = require('simple-git');
-const { Octokit } = require('@octokit/rest');
 const fs = require('fs');
 const path = require('path');
 const OpenAI = require('openai');
@@ -13,13 +12,40 @@ const ContextBuilder = require('./src/utils/contextBuilder');
 const ErrorAnalysisService = require('./src/services/errorAnalysisService');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(bodyParser.json());
+
+// Health check endpoint for deployment platforms
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    port: PORT 
+  });
+});
+
+// Root endpoint for basic connectivity test
+app.get('/', (req, res) => {
+  res.status(200).json({ 
+    message: 'GitHub Sentry Bot is running',
+    version: '1.0.0',
+    endpoints: ['/health', '/webhook']
+  });
+});
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Initialize GitHub Octokit client using dynamic import
+let octokit;
+(async () => {
+  const { Octokit } = await import('@octokit/rest');
+  octokit = new Octokit({
+    auth: process.env.GITHUB_TOKEN,
+  });
+})();
 
 // Helper to parse Sentry details from issue body
 function parseSentryDetails(sentryEvent) {
@@ -504,6 +530,12 @@ app.post('/webhook', async (req, res) => {
               // Get the highest confidence fix
               const bestFix = analysis.suggestedFixes[0];
               
+              // Ensure octokit is initialized before using it
+              if (!octokit) {
+                console.error('Octokit not initialized yet');
+                return;
+              }
+              
               // Post analysis as comment
               await octokit.issues.createComment({
                 owner: repo.owner.login,
@@ -536,6 +568,13 @@ app.post('/webhook', async (req, res) => {
               }
             } else {
               console.log('No fixes suggested');
+              
+              // Ensure octokit is initialized before using it
+              if (!octokit) {
+                console.error('Octokit not initialized yet');
+                return;
+              }
+              
               await octokit.issues.createComment({
                 owner: repo.owner.login,
                 repo: repo.name,
@@ -545,6 +584,13 @@ app.post('/webhook', async (req, res) => {
             }
           } catch (error) {
             console.error('Error processing:', error);
+            
+            // Ensure octokit is initialized before using it
+            if (!octokit) {
+              console.error('Octokit not initialized yet');
+              return;
+            }
+            
             await octokit.issues.createComment({
               owner: repo.owner.login,
               repo: repo.name,
@@ -558,8 +604,11 @@ app.post('/webhook', async (req, res) => {
       console.error('Webhook handler error:', err);
     }
   })();
+}); // Close the webhook handler
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-  });
+// Start the server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running on port ${PORT}`);
+  console.log(`Health check available at: http://0.0.0.0:${PORT}/health`);
+  console.log(`Webhook endpoint available at: http://0.0.0.0:${PORT}/webhook`);
 }); 
