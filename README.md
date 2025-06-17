@@ -25,9 +25,6 @@ OPENAI_API_KEY=your_openai_api_key_here
 
 # Sentry Configuration
 SENTRY_API_TOKEN=your_sentry_api_token_here
-
-# Bito Configuration (optional)
-BITO_API_KEY=your_bito_api_key_here
 ```
 
 ## Deployment

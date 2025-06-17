@@ -5,8 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "bito": "bito"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
@@ -21,7 +20,6 @@
     "glob": "^11.0.2",
     "node-fetch": "^3.3.2",
     "openai": "^5.1.0",
-    "simple-git": "^3.27.0",
-    "@bito/cli": "latest"
+    "simple-git": "^3.27.0"
   }
 }
