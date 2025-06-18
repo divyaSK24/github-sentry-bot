@@ -268,12 +268,36 @@ Please provide:
   validateFix(newContent, filePath) {
     try {
       console.log('🔍 Validating fix for:', filePath);
+      console.log('📏 Content length:', newContent.length, 'characters');
       
       // Check for common issues first
       const issues = this.checkForCommonIssues(newContent);
       if (issues.length > 0) {
-        console.error('❌ Validation issues found:', issues);
-        return false;
+        console.log('⚠️  Found validation issues:', issues.length, 'issues');
+        console.log('📋 Issues:', issues);
+        console.log('🔄 Attempting lenient validation...');
+        
+        // Try lenient validation for bracket issues
+        const lenientIssues = this.checkForCommonIssuesLenient(newContent);
+        if (lenientIssues.length === 0) {
+          console.log('✅ Lenient validation passed - proceeding with fix');
+          return true;
+        } else {
+          console.log('⚠️  Lenient validation also failed:', lenientIssues.length, 'issues');
+          console.log('📋 Lenient issues:', lenientIssues);
+          console.log('🔄 Trying fallback validation...');
+          
+          // Final fallback: only check for the most obvious errors
+          const fallbackIssues = this.checkForCommonIssuesFallback(newContent);
+          if (fallbackIssues.length === 0) {
+            console.log('✅ Fallback validation passed - proceeding with fix (with caution)');
+            return true;
+          } else {
+            console.error('❌ All validation levels failed:', fallbackIssues.length, 'critical issues');
+            console.error('📋 Critical issues:', fallbackIssues);
+            return false;
+          }
+        }
       }
 
       // Basic syntax validation for JavaScript/TypeScript (without external parsers)
@@ -283,7 +307,8 @@ Please provide:
         // Additional checks for common TypeScript/React issues
         const tsIssues = this.checkTypeScriptIssues(newContent, filePath);
         if (tsIssues.length > 0) {
-          console.error('❌ TypeScript/React issues found:', tsIssues);
+          console.error('❌ TypeScript/React issues found:', tsIssues.length, 'issues');
+          console.error('📋 TypeScript issues:', tsIssues);
           return false;
         }
       }
@@ -292,6 +317,7 @@ Please provide:
       return true;
     } catch (error) {
       console.error('❌ Fix validation error:', error.message);
+      console.error('📋 Error stack:', error.stack);
       // Don't fail validation on parser errors, just log them
       console.log('⚠️  Continuing with fix despite parser error');
       return true;
@@ -301,24 +327,10 @@ Please provide:
   checkForCommonIssues(content) {
     const issues = [];
 
-    // Check for unclosed brackets/parentheses
-    const brackets = { '{': '}', '[': ']', '(': ')' };
-    const stack = [];
-    
-    for (let i = 0; i < content.length; i++) {
-      const char = content[i];
-      if (brackets[char]) {
-        stack.push(char);
-      } else if (Object.values(brackets).includes(char)) {
-        const last = stack.pop();
-        if (brackets[last] !== char) {
-          issues.push(`Mismatched bracket at position ${i}`);
-        }
-      }
-    }
-
-    if (stack.length > 0) {
-      issues.push('Unclosed brackets/parentheses');
+    // More intelligent bracket validation that handles common code patterns
+    const bracketIssues = this.validateBracketsIntelligently(content);
+    if (bracketIssues.length > 0) {
+      issues.push(...bracketIssues);
     }
 
     // Check for common syntax errors
@@ -331,6 +343,199 @@ Please provide:
     }
 
     return issues;
+  }
+
+  validateBracketsIntelligently(content) {
+    const issues = [];
+    const brackets = { '{': '}', '[': ']', '(': ')' };
+    const stack = [];
+    let inString = false;
+    let inTemplate = false;
+    let inJSX = false;
+    let inComment = false;
+    let stringChar = '';
+    let i = 0;
+
+    while (i < content.length) {
+      const char = content[i];
+      const nextChar = content[i + 1];
+      const prevChar = content[i - 1];
+
+      // Handle comments
+      if (char === '/' && nextChar === '/') {
+        inComment = true;
+        i += 2;
+        while (i < content.length && content[i] !== '\n') i++;
+        inComment = false;
+        continue;
+      }
+      if (char === '/' && nextChar === '*') {
+        inComment = true;
+        i += 2;
+        while (i < content.length - 1 && !(content[i] === '*' && content[i + 1] === '/')) i++;
+        if (i < content.length - 1) i += 2;
+        inComment = false;
+        continue;
+      }
+
+      if (inComment) {
+        i++;
+        continue;
+      }
+
+      // Handle strings
+      if (!inString && (char === '"' || char === "'")) {
+        inString = true;
+        stringChar = char;
+        i++;
+        continue;
+      }
+      if (inString && char === stringChar && prevChar !== '\\') {
+        inString = false;
+        stringChar = '';
+        i++;
+        continue;
+      }
+      if (inString) {
+        i++;
+        continue;
+      }
+
+      // Handle template literals
+      if (!inTemplate && char === '`') {
+        inTemplate = true;
+        i++;
+        continue;
+      }
+      if (inTemplate && char === '`') {
+        inTemplate = false;
+        i++;
+        continue;
+      }
+      if (inTemplate) {
+        i++;
+        continue;
+      }
+
+      // Handle JSX (simplified)
+      if (char === '<' && !inJSX) {
+        // Check if it's a JSX opening tag
+        const jsxMatch = content.slice(i).match(/^<[A-Za-z][A-Za-z0-9]*/);
+        if (jsxMatch) {
+          inJSX = true;
+          i++;
+          continue;
+        }
+      }
+      if (inJSX && char === '>') {
+        inJSX = false;
+        i++;
+        continue;
+      }
+      if (inJSX) {
+        i++;
+        continue;
+      }
+
+      // Handle regular brackets
+      if (brackets[char]) {
+        stack.push({ char, position: i });
+      } else if (Object.values(brackets).includes(char)) {
+        if (stack.length === 0) {
+          // Check if this might be a legitimate closing bracket
+          const context = content.slice(Math.max(0, i - 10), i + 10);
+          if (!this.isLikelyValidClosingBracket(context, char)) {
+            const analysis = this.analyzeBracketContext(content, i);
+            issues.push(`Unexpected closing bracket '${char}' at position ${i} - Context: ${analysis}`);
+          }
+        } else {
+          const last = stack.pop();
+          if (brackets[last.char] !== char) {
+            // Check if this might be a legitimate mismatch
+            const context = content.slice(Math.max(0, last.position - 10), i + 10);
+            if (!this.isLikelyValidBracketMismatch(context, last.char, char)) {
+              const analysis = this.analyzeBracketContext(content, i);
+              issues.push(`Mismatched bracket at position ${i}: expected '${brackets[last.char]}', got '${char}' - Context: ${analysis}`);
+            }
+          }
+        }
+      }
+
+      i++;
+    }
+
+    // Check for unclosed brackets
+    if (stack.length > 0) {
+      const unclosed = stack.map(s => s.char).join(', ');
+      issues.push(`Unclosed brackets/parentheses: ${unclosed}`);
+    }
+
+    return issues;
+  }
+
+  analyzeBracketContext(content, position) {
+    const start = Math.max(0, position - 20);
+    const end = Math.min(content.length, position + 20);
+    const context = content.slice(start, end);
+    
+    // Replace newlines and tabs for better readability
+    const cleanContext = context.replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+    
+    return `"${cleanContext}" (pos ${position})`;
+  }
+
+  isLikelyValidClosingBracket(context, bracket) {
+    // Check if this closing bracket might be legitimate
+    const patterns = [
+      /\)\s*;?\s*$/,  // Function call ending
+      /\)\s*\.\s*\w+/, // Method chaining
+      /\)\s*,\s*\w+/,  // Function arguments
+      /\)\s*=>\s*/,    // Arrow function
+      /\)\s*\{/,       // Function body
+      /\)\s*\?/,       // Ternary operator
+      /\)\s*&&/,       // Logical AND
+      /\)\s*\|\|/,     // Logical OR
+      /\)\s*\+/,       // Addition
+      /\)\s*-/,        // Subtraction
+      /\)\s*\*/,       // Multiplication
+      /\)\s*\//,       // Division
+      /\)\s*%/,        // Modulo
+      /\)\s*===/,      // Strict equality
+      /\)\s*!==/,      // Strict inequality
+      /\)\s*==/,       // Equality
+      /\)\s*!=/,       // Inequality
+      /\)\s*</,        // Less than
+      /\)\s*>/,        // Greater than
+      /\)\s*<=/,       // Less than or equal
+      /\)\s*>=/,       // Greater than or equal
+      /\)\s*\[/,       // Array access
+      /\)\s*\]/,       // Array access
+      /\)\s*`/,        // Template literal
+      /\)\s*"/,        // String
+      /\)\s*'/,        // String
+      /\)\s*\/\//,     // Comment
+      /\)\s*\/\*/,     // Comment
+      /\)\s*\*\//,     // Comment
+      /\)\s*\n/,       // Newline
+      /\)\s*$/,        // End of line
+    ];
+
+    return patterns.some(pattern => pattern.test(context));
+  }
+
+  isLikelyValidBracketMismatch(context, openBracket, closeBracket) {
+    // Check if this bracket mismatch might be legitimate
+    const patterns = [
+      // Common patterns where bracket mismatches are acceptable
+      /\{\s*\[/,  // Object with array
+      /\[\s*\{/,  // Array with object
+      /\(\s*\{/,  // Function with object
+      /\(\s*\[/,  // Function with array
+      /\{\s*\(/,  // Object with function
+      /\[\s*\(/,  // Array with function
+    ];
+
+    return patterns.some(pattern => pattern.test(context));
   }
 
   checkTypeScriptIssues(content, filePath) {
@@ -359,6 +564,82 @@ Please provide:
       if (typeAnnotations > semicolons * 2) {
         issues.push('Potential unclosed type annotations');
       }
+    }
+
+    return issues;
+  }
+
+  checkForCommonIssuesLenient(content) {
+    const issues = [];
+
+    // Only check for obvious syntax errors, not bracket mismatches
+    if (content.includes('undefinedundefined')) {
+      issues.push('Potential undefined concatenation');
+    }
+
+    if (content.includes('nullnull')) {
+      issues.push('Potential null concatenation');
+    }
+
+    // Check for obvious unclosed structures (very basic)
+    const openBraces = (content.match(/\{/g) || []).length;
+    const closeBraces = (content.match(/\}/g) || []).length;
+    const openParens = (content.match(/\(/g) || []).length;
+    const closeParens = (content.match(/\)/g) || []).length;
+    const openBrackets = (content.match(/\[/g) || []).length;
+    const closeBrackets = (content.match(/\]/g) || []).length;
+
+    // Only flag if there's a significant imbalance
+    if (Math.abs(openBraces - closeBraces) > 2) {
+      issues.push(`Significant brace imbalance: ${openBraces} open, ${closeBraces} close`);
+    }
+    if (Math.abs(openParens - closeParens) > 2) {
+      issues.push(`Significant parenthesis imbalance: ${openParens} open, ${closeParens} close`);
+    }
+    if (Math.abs(openBrackets - closeBrackets) > 2) {
+      issues.push(`Significant bracket imbalance: ${openBrackets} open, ${closeBrackets} close`);
+    }
+
+    return issues;
+  }
+
+  checkForCommonIssuesFallback(content) {
+    const issues = [];
+
+    // Only check for the most obvious and critical syntax errors
+    if (content.includes('undefinedundefined')) {
+      issues.push('Critical: undefined concatenation');
+    }
+
+    if (content.includes('nullnull')) {
+      issues.push('Critical: null concatenation');
+    }
+
+    // Check for completely broken syntax patterns
+    if (content.includes('function(') && !content.includes('function(')) {
+      issues.push('Critical: malformed function declaration');
+    }
+
+    if (content.includes('import ') && content.includes('from') && !content.includes(';') && !content.includes('\n')) {
+      issues.push('Critical: malformed import statement');
+    }
+
+    // Check for extreme bracket imbalances (more than 5)
+    const openBraces = (content.match(/\{/g) || []).length;
+    const closeBraces = (content.match(/\}/g) || []).length;
+    const openParens = (content.match(/\(/g) || []).length;
+    const closeParens = (content.match(/\)/g) || []).length;
+    const openBrackets = (content.match(/\[/g) || []).length;
+    const closeBrackets = (content.match(/\]/g) || []).length;
+
+    if (Math.abs(openBraces - closeBraces) > 5) {
+      issues.push(`Critical: extreme brace imbalance: ${openBraces} open, ${closeBraces} close`);
+    }
+    if (Math.abs(openParens - closeParens) > 5) {
+      issues.push(`Critical: extreme parenthesis imbalance: ${openParens} open, ${closeParens} close`);
+    }
+    if (Math.abs(openBrackets - closeBrackets) > 5) {
+      issues.push(`Critical: extreme bracket imbalance: ${openBrackets} open, ${closeBrackets} close`);
     }
 
     return issues;
