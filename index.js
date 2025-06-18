@@ -518,8 +518,20 @@ app.post('/webhook', async (req, res) => {
             console.log('Cloning repository...');
             try {
               const git = simpleGit();
-              await git.clone(`https://github.com/${repo.owner.login}/${repo.name}.git`, repoPath);
-              console.log('Repository cloned successfully to:', repoPath);
+              // Use the full repository URL from the webhook payload with authentication
+              const repoUrl = `https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`;
+              console.log('Cloning from:', `https://github.com/${repo.owner.login}/${repo.name}.git`);
+              
+              try {
+                await git.clone(repoUrl, repoPath);
+                console.log('Repository cloned successfully to:', repoPath);
+              } catch (tokenError) {
+                console.warn('Token-based cloning failed, trying alternative method:', tokenError.message);
+                // Fallback: try with SSH-style URL or public access
+                const fallbackUrl = `https://github.com/${repo.owner.login}/${repo.name}.git`;
+                await git.clone(fallbackUrl, repoPath);
+                console.log('Repository cloned successfully with fallback method to:', repoPath);
+              }
             } catch (cloneError) {
               console.error('Failed to clone repository:', cloneError.message);
               throw new Error(`Failed to clone repository: ${cloneError.message}`);
@@ -614,7 +626,7 @@ app.post('/webhook', async (req, res) => {
             console.error('Error processing:', error);
             
             // Clean up: remove temporary repository if it exists
-            if (repoPath && fs.existsSync(repoPath)) {
+            if (typeof repoPath !== 'undefined' && repoPath && fs.existsSync(repoPath)) {
               try {
                 fs.rmSync(repoPath, { recursive: true, force: true });
                 console.log('Temporary repository cleaned up after error:', repoPath);
