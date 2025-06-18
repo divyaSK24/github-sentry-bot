@@ -564,8 +564,39 @@ app.post('/webhook', async (req, res) => {
               console.log('Analysis successful with', analysis.suggestedFixes.length, 'suggested fixes');
               
               // Save analysis for reference
-              const analysisPath = path.join(__dirname, 'analysis', `analysis-${Date.now()}.json`);
-              fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
+              try {
+                const analysisDir = path.join(__dirname, 'analysis');
+                console.log('Analysis directory path:', analysisDir);
+                console.log('Directory exists before check:', fs.existsSync(analysisDir));
+                
+                if (!fs.existsSync(analysisDir)) {
+                  fs.mkdirSync(analysisDir, { recursive: true });
+                  console.log('Created analysis directory:', analysisDir);
+                }
+                
+                const analysisPath = path.join(analysisDir, `analysis-${Date.now()}.json`);
+                console.log('Attempting to save analysis to:', analysisPath);
+                
+                const analysisData = JSON.stringify(analysis, null, 2);
+                console.log('Analysis data length:', analysisData.length);
+                
+                fs.writeFileSync(analysisPath, analysisData);
+                console.log('✅ Analysis saved successfully to:', analysisPath);
+              } catch (saveError) {
+                console.error('❌ Failed to save analysis:', saveError.message);
+                console.error('Error details:', saveError);
+                
+                // Try fallback location
+                try {
+                  const fallbackPath = path.join(__dirname, 'tmp', `analysis-${Date.now()}.json`);
+                  console.log('Trying fallback location:', fallbackPath);
+                  fs.writeFileSync(fallbackPath, JSON.stringify(analysis, null, 2));
+                  console.log('✅ Analysis saved to fallback location:', fallbackPath);
+                } catch (fallbackError) {
+                  console.error('❌ Fallback save also failed:', fallbackError.message);
+                  // Continue processing even if both saves fail
+                }
+              }
               
               // Get the highest confidence fix
               const bestFix = analysis.suggestedFixes[0];
