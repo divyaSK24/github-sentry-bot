@@ -18,11 +18,27 @@ app.use(bodyParser.json());
 
 // Health check endpoint for deployment platforms
 app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'healthy', 
+  const healthData = {
+    status: 'healthy',
     timestamp: new Date().toISOString(),
-    port: PORT 
-  });
+    port: PORT,
+    uptime: process.uptime(),
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+      external: Math.round(process.memoryUsage().external / 1024 / 1024)
+    },
+    environment: process.env.NODE_ENV || 'development',
+    nodeVersion: process.version,
+    platform: process.platform,
+    envVars: {
+      githubToken: !!process.env.GITHUB_TOKEN,
+      openaiApiKey: !!process.env.OPENAI_API_KEY,
+      sentryApiToken: !!process.env.SENTRY_API_TOKEN
+    }
+  };
+  
+  res.status(200).json(healthData);
 });
 
 // Root endpoint for basic connectivity test
@@ -30,7 +46,20 @@ app.get('/', (req, res) => {
   res.status(200).json({ 
     message: 'GitHub Sentry Bot is running',
     version: '1.0.0',
-    endpoints: ['/health', '/webhook']
+    endpoints: ['/health', '/webhook'],
+    timestamp: new Date().toISOString(),
+    status: 'operational'
+  });
+});
+
+// Simple test endpoint
+app.get('/test', (req, res) => {
+  res.status(200).json({
+    message: 'Test endpoint working',
+    timestamp: new Date().toISOString(),
+    headers: req.headers,
+    method: req.method,
+    url: req.url
   });
 });
 
@@ -702,7 +731,30 @@ app.post('/webhook', async (req, res) => {
 
 // Start the server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`Health check available at: http://0.0.0.0:${PORT}/health`);
-  console.log(`Webhook endpoint available at: http://0.0.0.0:${PORT}/webhook`);
-}); 
+  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`📍 Health check available at: http://0.0.0.0:${PORT}/health`);
+  console.log(`🔗 Webhook endpoint available at: http://0.0.0.0:${PORT}/webhook`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📊 Memory usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+  
+  // Check required environment variables
+  const requiredEnvVars = ['GITHUB_TOKEN', 'OPENAI_API_KEY', 'SENTRY_API_TOKEN'];
+  const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+  if (missingVars.length > 0) {
+    console.warn(`⚠️  Missing environment variables: ${missingVars.join(', ')}`);
+  } else {
+    console.log('✅ All required environment variables are set');
+  }
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('💥 Uncaught Exception:', error);
+  process.exit(1);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
