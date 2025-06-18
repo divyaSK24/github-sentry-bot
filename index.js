@@ -475,13 +475,21 @@ app.post('/webhook', async (req, res) => {
     issueTitle: req.body.issue?.title,
     issueNumber: req.body.issue?.number
   });
+  
+  // Add detailed logging of the webhook payload
+  console.log('Full webhook payload:', JSON.stringify(req.body, null, 2));
+  console.log('GitHub event type:', req.headers['x-github-event']);
+  
   res.status(200).send('OK'); // Respond immediately to GitHub
 
   // Process the event in the background
   (async () => {
     try {
       const event = req.headers['x-github-event'];
+      console.log(`Processing event: ${event}`);
+      
       if (event === 'issues' && ['labeled', 'opened', 'edited'].includes(req.body.action)) {
+        console.log(`✅ Processing issues event with action: ${req.body.action}`);
         const issue = req.body.issue;
         const repo = req.body.repository;
         let hasSentryErrorLabel = false;
@@ -648,7 +656,11 @@ app.post('/webhook', async (req, res) => {
               body: `❌ Error processing the issue: ${error.message}`
             });
           }
+        } else {
+          console.log('❌ Issue does not have "sentry error" label, ignoring');
         }
+      } else {
+        console.log(`❌ Ignoring event: ${event} (action: ${req.body.action}) - bot only processes 'issues' events with actions: labeled, opened, edited`);
       }
     } catch (err) {
       console.error('Webhook handler error:', err);
