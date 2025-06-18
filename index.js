@@ -506,7 +506,24 @@ app.post('/webhook', async (req, res) => {
 
           try {
             const sentryEvent = await fetchSentryEventJson(sentryUrl);
-            const repoPath = path.join(__dirname, 'tmp', `${repo.owner.login}-${repo.name}-${Date.now()}`);
+            
+            // Create a cleaner repository path
+            const repoName = repo.name.replace(/[^a-zA-Z0-9-_]/g, '-');
+            const repoPath = path.join(__dirname, 'tmp', `${repo.owner.login}-${repoName}-${Date.now()}`);
+            
+            console.log('Repository path:', repoPath);
+            console.log('Repository details:', { owner: repo.owner.login, name: repo.name, fullName: repo.full_name });
+            
+            // Clone the repository first
+            console.log('Cloning repository...');
+            try {
+              const git = simpleGit();
+              await git.clone(`https://github.com/${repo.owner.login}/${repo.name}.git`, repoPath);
+              console.log('Repository cloned successfully to:', repoPath);
+            } catch (cloneError) {
+              console.error('Failed to clone repository:', cloneError.message);
+              throw new Error(`Failed to clone repository: ${cloneError.message}`);
+            }
             
             // Initialize error analysis service
             const errorAnalysis = new ErrorAnalysisService();
@@ -516,6 +533,9 @@ app.post('/webhook', async (req, res) => {
             if (!errorDetails.file || !errorDetails.line) {
               throw new Error('Could not determine error location');
             }
+
+            console.log('Error details:', errorDetails);
+            console.log('Full file path:', path.join(repoPath, errorDetails.file));
 
             // Analyze error
             const analysis = await errorAnalysis.analyzeError(errorDetails, repoPath);
@@ -582,8 +602,26 @@ app.post('/webhook', async (req, res) => {
                 body: '❌ No automatic fixes could be generated for this error. Please review manually.'
               });
             }
+            
+            // Clean up: remove temporary repository
+            try {
+              fs.rmSync(repoPath, { recursive: true, force: true });
+              console.log('Temporary repository cleaned up:', repoPath);
+            } catch (cleanupError) {
+              console.warn('Failed to cleanup temporary repository:', cleanupError.message);
+            }
           } catch (error) {
             console.error('Error processing:', error);
+            
+            // Clean up: remove temporary repository if it exists
+            if (repoPath && fs.existsSync(repoPath)) {
+              try {
+                fs.rmSync(repoPath, { recursive: true, force: true });
+                console.log('Temporary repository cleaned up after error:', repoPath);
+              } catch (cleanupError) {
+                console.warn('Failed to cleanup temporary repository after error:', cleanupError.message);
+              }
+            }
             
             // Ensure octokit is initialized before using it
             if (!octokit) {

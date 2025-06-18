@@ -27,32 +27,47 @@ class ContextBuilder {
 
   // Find related files based on imports and dependencies
   async findRelatedFiles(filePath, repoPath) {
-    const fileContent = fs.readFileSync(filePath, 'utf8');
-    const fileDir = path.dirname(filePath);
-    
-    // Find imports
-    const importPatterns = {
-      js: /(?:import|require)\s*\(?['"]([^'"]+)['"]\)?/g,
-      ts: /(?:import|require)\s*\(?['"]([^'"]+)['"]\)?/g,
-      java: /(?:import|package)\s+([^;]+);/g
-    };
+    try {
+      // Check if the file exists before trying to read it
+      if (!fs.existsSync(filePath)) {
+        console.warn(`File not found: ${filePath}`);
+        return [];
+      }
 
-    const ext = path.extname(filePath).slice(1);
-    const pattern = importPatterns[ext] || importPatterns.js;
-    const imports = [...fileContent.matchAll(pattern)].map(m => m[1]);
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      const fileDir = path.dirname(filePath);
+      
+      // Find imports
+      const importPatterns = {
+        js: /(?:import|require)\s*\(?['"]([^'"]+)['"]\)?/g,
+        ts: /(?:import|require)\s*\(?['"]([^'"]+)['"]\)?/g,
+        java: /(?:import|package)\s+([^;]+);/g
+      };
 
-    // Find related files
-    const relatedFiles = new Set();
-    for (const imp of imports) {
-      const matches = glob.sync(`**/${imp}*`, { 
-        cwd: repoPath,
-        absolute: true,
-        ignore: ['**/node_modules/**', '**/dist/**']
-      });
-      matches.forEach(m => relatedFiles.add(m));
+      const ext = path.extname(filePath).slice(1);
+      const pattern = importPatterns[ext] || importPatterns.js;
+      const imports = [...fileContent.matchAll(pattern)].map(m => m[1]);
+
+      // Find related files
+      const relatedFiles = new Set();
+      for (const imp of imports) {
+        try {
+          const matches = glob.sync(`**/${imp}*`, { 
+            cwd: repoPath,
+            absolute: true,
+            ignore: ['**/node_modules/**', '**/dist/**']
+          });
+          matches.forEach(m => relatedFiles.add(m));
+        } catch (error) {
+          console.warn(`Error finding imports for ${imp}:`, error.message);
+        }
+      }
+
+      return Array.from(relatedFiles);
+    } catch (error) {
+      console.error(`Error in findRelatedFiles for ${filePath}:`, error.message);
+      return [];
     }
-
-    return Array.from(relatedFiles);
   }
 
   // Build comprehensive context
@@ -61,25 +76,32 @@ class ContextBuilder {
     this.currentTokens = 0;
 
     // 1. Get error file context
-    const errorContext = this.getFileContent(
-      errorFile,
-      Math.max(1, errorLine - 10),
-      errorLine + 10
-    );
-    context += `\n=== Error File (${path.basename(errorFile)}) ===\n${errorContext}\n`;
-    this.currentTokens += this.estimateTokens(errorContext);
+    if (fs.existsSync(errorFile)) {
+      const errorContext = this.getFileContent(
+        errorFile,
+        Math.max(1, errorLine - 10),
+        errorLine + 10
+      );
+      context += `\n=== Error File (${path.basename(errorFile)}) ===\n${errorContext}\n`;
+      this.currentTokens += this.estimateTokens(errorContext);
+    } else {
+      console.warn(`Error file not found: ${errorFile}`);
+      context += `\n=== Error File (${path.basename(errorFile)}) ===\nFile not found in repository\n`;
+    }
 
-    // 2. Find and add related files
-    const relatedFiles = await this.findRelatedFiles(errorFile, repoPath);
-    for (const file of relatedFiles) {
-      if (this.currentTokens >= this.maxTokens) break;
+    // 2. Find and add related files (only if error file exists)
+    if (fs.existsSync(errorFile)) {
+      const relatedFiles = await this.findRelatedFiles(errorFile, repoPath);
+      for (const file of relatedFiles) {
+        if (this.currentTokens >= this.maxTokens) break;
 
-      const fileContent = this.getFileContent(file, 1, 50); // First 50 lines
-      const tokens = this.estimateTokens(fileContent);
-      
-      if (this.currentTokens + tokens <= this.maxTokens) {
-        context += `\n=== Related File (${path.basename(file)}) ===\n${fileContent}\n`;
-        this.currentTokens += tokens;
+        const fileContent = this.getFileContent(file, 1, 50); // First 50 lines
+        const tokens = this.estimateTokens(fileContent);
+        
+        if (this.currentTokens + tokens <= this.maxTokens) {
+          context += `\n=== Related File (${path.basename(file)}) ===\n${fileContent}\n`;
+          this.currentTokens += tokens;
+        }
       }
     }
 
@@ -96,28 +118,46 @@ class ContextBuilder {
 
   // Get project structure
   getProjectStructure(repoPath) {
-    const structure = [];
-    const ignorePatterns = ['node_modules', 'dist', '.git', 'coverage'];
+    try {
+      if (!fs.existsSync(repoPath)) {
+        console.warn(`Repository path does not exist: ${repoPath}`);
+        return 'Repository not found';
+      }
 
-    function buildTree(dir, level = 0) {
-      const items = fs.readdirSync(dir);
-      items.forEach(item => {
-        if (ignorePatterns.some(pattern => item.includes(pattern))) return;
-        
-        const fullPath = path.join(dir, item);
-        const stats = fs.statSync(fullPath);
-        
-        if (stats.isDirectory()) {
-          structure.push('  '.repeat(level) + `📁 ${item}/`);
-          buildTree(fullPath, level + 1);
-        } else {
-          structure.push('  '.repeat(level) + `📄 ${item}`);
+      const structure = [];
+      const ignorePatterns = ['node_modules', 'dist', '.git', 'coverage'];
+
+      function buildTree(dir, level = 0) {
+        try {
+          const items = fs.readdirSync(dir);
+          items.forEach(item => {
+            if (ignorePatterns.some(pattern => item.includes(pattern))) return;
+            
+            const fullPath = path.join(dir, item);
+            try {
+              const stats = fs.statSync(fullPath);
+              
+              if (stats.isDirectory()) {
+                structure.push('  '.repeat(level) + `📁 ${item}/`);
+                buildTree(fullPath, level + 1);
+              } else {
+                structure.push('  '.repeat(level) + `📄 ${item}`);
+              }
+            } catch (error) {
+              console.warn(`Error reading ${fullPath}:`, error.message);
+            }
+          });
+        } catch (error) {
+          console.warn(`Error reading directory ${dir}:`, error.message);
         }
-      });
-    }
+      }
 
-    buildTree(repoPath);
-    return structure.join('\n');
+      buildTree(repoPath);
+      return structure.join('\n');
+    } catch (error) {
+      console.error(`Error getting project structure for ${repoPath}:`, error.message);
+      return 'Error reading project structure';
+    }
   }
 }
 
