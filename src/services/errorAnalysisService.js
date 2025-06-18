@@ -1,4 +1,3 @@
-const { ESLint } = require('eslint');
 const { execSync } = require('child_process');
 const OpenAI = require('openai');
 const ContextBuilder = require('../utils/contextBuilder');
@@ -11,57 +10,32 @@ class ErrorAnalysisService {
       apiKey: process.env.OPENAI_API_KEY,
     });
     this.contextBuilder = new ContextBuilder(options.maxTokens);
-    this.eslint = new ESLint({
-      fix: true,
-      useEslintrc: true
-    });
   }
 
   async analyzeError(errorDetails, repoPath) {
     const results = {
-      linting: null,
       aiAnalysis: null,
       suggestedFixes: []
     };
 
     try {
-      // 1. Run ESLint if file is JavaScript/TypeScript
-      if (this.isJsFile(errorDetails.file)) {
-        results.linting = await this.runLinting(errorDetails.file);
-      }
-
-      // 2. Build context for AI analysis
+      // 1. Build context for AI analysis
       const context = await this.contextBuilder.buildContext(
         path.join(repoPath, errorDetails.file),
         errorDetails.line,
         repoPath
       );
 
-      // 3. Run AI analysis
+      // 2. Run AI analysis
       results.aiAnalysis = await this.runAIAnalysis(errorDetails, context);
 
-      // 4. Combine and prioritize fixes
+      // 3. Combine and prioritize fixes
       results.suggestedFixes = this.combineFixes(results);
 
       return results;
     } catch (error) {
       console.error('Error in analysis:', error);
       throw error;
-    }
-  }
-
-  isJsFile(filePath) {
-    const ext = path.extname(filePath).toLowerCase();
-    return ['.js', '.jsx', '.ts', '.tsx'].includes(ext);
-  }
-
-  async runLinting(filePath) {
-    try {
-      const results = await this.eslint.lintFiles([filePath]);
-      return results[0];
-    } catch (error) {
-      console.error('ESLint error:', error);
-      return null;
     }
   }
 
@@ -119,16 +93,6 @@ Please provide:
   combineFixes(results) {
     const fixes = [];
 
-    // Add ESLint fixes if available
-    if (results.linting?.output) {
-      fixes.push({
-        type: 'linting',
-        code: results.linting.output,
-        confidence: 0.9,
-        source: 'ESLint'
-      });
-    }
-
     // Add AI fixes
     if (results.aiAnalysis?.suggestedFix) {
       fixes.push({
@@ -146,12 +110,6 @@ Please provide:
 
   async applyFix(filePath, fix) {
     try {
-      if (fix.type === 'linting') {
-        // ESLint fix is already in the correct format
-        fs.writeFileSync(filePath, fix.code);
-        return true;
-      }
-
       // For AI fixes, we need more sophisticated replacement logic
       const content = fs.readFileSync(filePath, 'utf8');
       const lines = content.split('\n');
@@ -259,16 +217,16 @@ Please provide:
     try {
       const newLines = [...lines];
       const firstBlock = codeBlocks[0];
-    const blockLines = firstBlock.split('\n');
+      const blockLines = firstBlock.split('\n');
 
-    // Replace the code at the target location
-    newLines.splice(
-      location.startLine - 1,
-      location.endLine - location.startLine + 1,
-      ...blockLines
-    );
+      // Replace the code at the target location
+      newLines.splice(
+        location.startLine - 1,
+        location.endLine - location.startLine + 1,
+        ...blockLines
+      );
 
-    return newLines;
+      return newLines;
     } catch (error) {
       console.error('Error applying code fix:', error);
       return null;
@@ -289,7 +247,7 @@ Please provide:
   validateFix(newContent, filePath) {
     try {
       // Basic syntax validation for JavaScript/TypeScript
-      if (this.isJsFile(filePath)) {
+      if (filePath.endsWith('.js') || filePath.endsWith('.jsx') || filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
         // Try parsing the code
         if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
           require('@typescript-eslint/parser').parse(newContent);
