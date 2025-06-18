@@ -177,9 +177,14 @@ Please provide:
   }
 
   async findFixLocation(filePath, fix, lines) {
+    console.log('🔍 Finding fix location for:', filePath);
+    console.log('Error line from fix:', fix.errorLine);
+    console.log('Total lines in file:', lines.length);
+    
     // Try to find the error location first
     const errorLine = fix.errorLine || 0;
     if (errorLine > 0 && errorLine <= lines.length) {
+      console.log('✅ Found exact error line:', errorLine);
       return {
         startLine: Math.max(1, errorLine - 2),
         endLine: Math.min(lines.length, errorLine + 2),
@@ -189,12 +194,17 @@ Please provide:
 
     // If no error line, try to find the best match using fuzzy search
     const firstBlock = this.extractCodeBlocks(fix.code)[0];
-    if (!firstBlock) return null;
+    if (!firstBlock) {
+      console.log('❌ No code blocks found in fix');
+      return null;
+    }
 
+    console.log('🔍 Searching for code pattern in file...');
     // Find similar code patterns
     const pattern = this.generateSearchPattern(firstBlock);
     for (let i = 0; i < lines.length; i++) {
       if (pattern.test(lines[i])) {
+        console.log('✅ Found matching pattern at line:', i + 1);
         return {
           startLine: Math.max(1, i - 2),
           endLine: Math.min(lines.length, i + 2),
@@ -203,6 +213,7 @@ Please provide:
       }
     }
 
+    console.log('❌ No matching pattern found in file');
     return null;
   }
 

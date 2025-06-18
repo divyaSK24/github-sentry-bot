@@ -657,14 +657,24 @@ app.post('/webhook', async (req, res) => {
 
               // Apply the fix if confidence is high enough
               if (bestFix.confidence >= 0.8) {
+                // Add error line information to the fix object
+                const fixWithLocation = {
+                  ...bestFix,
+                  errorLine: errorDetails.line,
+                  errorFile: errorDetails.file
+                };
+                
                 const fixApplied = await errorAnalysis.applyFix(
                   path.join(repoPath, errorDetails.file),
-                  bestFix
+                  fixWithLocation
                 );
 
                 if (fixApplied) {
+                  console.log('✅ Fix applied successfully');
                   // Create PR with the fix
                   // ... existing PR creation logic ...
+                } else {
+                  console.log('❌ Fix could not be applied automatically');
                 }
               }
             } else {
