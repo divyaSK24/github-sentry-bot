@@ -564,6 +564,7 @@ app.post('/webhook', async (req, res) => {
               console.log('Analysis successful with', analysis.suggestedFixes.length, 'suggested fixes');
               
               // Save analysis for reference
+              let analysisPath = null; // Declare outside try-catch
               try {
                 const analysisDir = path.join(__dirname, 'analysis');
                 console.log('Analysis directory path:', analysisDir);
@@ -574,7 +575,7 @@ app.post('/webhook', async (req, res) => {
                   console.log('Created analysis directory:', analysisDir);
                 }
                 
-                const analysisPath = path.join(analysisDir, `analysis-${Date.now()}.json`);
+                analysisPath = path.join(analysisDir, `analysis-${Date.now()}.json`);
                 console.log('Attempting to save analysis to:', analysisPath);
                 
                 const analysisData = JSON.stringify(analysis, null, 2);
@@ -588,13 +589,13 @@ app.post('/webhook', async (req, res) => {
                 
                 // Try fallback location
                 try {
-                  const fallbackPath = path.join(__dirname, 'tmp', `analysis-${Date.now()}.json`);
-                  console.log('Trying fallback location:', fallbackPath);
-                  fs.writeFileSync(fallbackPath, JSON.stringify(analysis, null, 2));
-                  console.log('✅ Analysis saved to fallback location:', fallbackPath);
+                  analysisPath = path.join(__dirname, 'tmp', `analysis-${Date.now()}.json`);
+                  console.log('Trying fallback location:', analysisPath);
+                  fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
+                  console.log('✅ Analysis saved to fallback location:', analysisPath);
                 } catch (fallbackError) {
                   console.error('❌ Fallback save also failed:', fallbackError.message);
-                  // Continue processing even if both saves fail
+                  analysisPath = null; // Set to null if both saves fail
                 }
               }
               
@@ -622,7 +623,7 @@ app.post('/webhook', async (req, res) => {
                       `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
                       `**Test Impact:** ${analysis.aiAnalysis.testImpact}\n\n` +
                       (analysis.aiAnalysis.alternatives ? `**Alternative Solutions:**\n${analysis.aiAnalysis.alternatives}\n\n` : '') +
-                      `Analysis saved at: \`${analysisPath}\``
+                      (analysisPath ? `Analysis saved at: \`${analysisPath}\`` : 'Analysis completed (file save failed)')
               });
 
               // Apply the fix if confidence is high enough
