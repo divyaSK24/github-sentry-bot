@@ -595,94 +595,96 @@ app.post('/webhook', async (req, res) => {
               // Get the highest confidence fix
               const bestFix = analysis.suggestedFixes[0];
               
-              // Apply the fix to the file
-              const targetFilePath = path.join(repoPath, errorDetails.file);
-              console.log('Applying fix to file:', targetFilePath);
-              
-              const fixResult = await errorAnalysis.applyFix(targetFilePath, {
-                ...bestFix,
-                errorLine: errorDetails.line,
-                errorFile: errorDetails.file
-              });
-              
-              if (!fixResult || !fixResult.success) {
-                console.log('❌ Fix could not be applied automatically');
+              // === Branch, Commit, Push, PR, and Comment Logic ===
+              try {
+                const git = simpleGit(repoPath);
+                await git.fetch();
+                
+                // Configure git user identity for the temporary repository
+                await git.addConfig('user.email', 'divya@5x.co');
+                await git.addConfig('user.name', 'divyask24');
+                
+                // Checkout staging branch first
+                await git.checkout('staging');
+                
+                // Create a new branch from staging
+                const branchName = `fix/sentry-error-${issue.number}-${Date.now()}`;
+                await git.checkoutLocalBranch(branchName);
+                
+                // Now apply the fix to the clean branch
+                const targetFilePath = path.join(repoPath, errorDetails.file);
+                console.log('Applying fix to file on new branch:', targetFilePath);
+                
+                const fixResult = await errorAnalysis.applyFix(targetFilePath, {
+                  ...bestFix,
+                  errorLine: errorDetails.line,
+                  errorFile: errorDetails.file
+                });
+                
+                if (!fixResult || !fixResult.success) {
+                  console.log('❌ Fix could not be applied on new branch');
+                  await octokit.issues.createComment({
+                    owner: repo.owner.login,
+                    repo: repo.name,
+                    issue_number: issue.number,
+                    body: '❌ The AI-generated fix could not be applied on the new branch. Please review manually.'
+                  });
+                  return;
+                }
+                
+                console.log('✅ Fix applied successfully on new branch:', fixResult.diff);
+                
+                // Save analysis for reference
+                let analysisPath = null; // Declare outside try-catch
+                try {
+                  const analysisDir = path.join(__dirname, 'analysis');
+                  if (!fs.existsSync(analysisDir)) {
+                    fs.mkdirSync(analysisDir, { recursive: true });
+                  }
+                  analysisPath = path.join(analysisDir, `analysis-${Date.now()}.json`);
+                  fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
+                } catch (saveError) {
+                  // Fallback location
+                  try {
+                    analysisPath = path.join(__dirname, 'tmp', `analysis-${Date.now()}.json`);
+                    fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
+                  } catch (fallbackError) {
+                    analysisPath = null;
+                  }
+                }
+                
                 // Ensure octokit is initialized before using it
                 if (!octokit) {
                   console.error('Octokit not initialized yet');
                   return;
                 }
                 
+                // Post analysis as comment
                 await octokit.issues.createComment({
                   owner: repo.owner.login,
                   repo: repo.name,
                   issue_number: issue.number,
-                  body: '❌ The AI-generated fix could not be applied automatically. Please review manually.'
+                  body: `### 🛠️ Error Analysis\n\n` +
+                        `**Error:** \`${errorDetails.error}\`\n` +
+                        `**Root Cause:** ${analysis.aiAnalysis.rootCause}\n` +
+                        `**Confidence:** ${(bestFix.confidence * 100).toFixed(1)}%\n` +
+                        `**Source:** ${bestFix.source}\n\n` +
+                        `**Context:** Analyzed ${analysis.context?.split('===').length - 1 || 1} files\n\n` +
+                        `**Suggested Fix:**\n\n${bestFix.code}\n\n` +
+                        `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
+                        `**Test Impact:** ${analysis.aiAnalysis.testImpact}\n\n` +
+                        (analysis.aiAnalysis.alternatives ? `**Alternative Solutions:**\n${analysis.aiAnalysis.alternatives}\n\n` : '') +
+                        (analysisPath ? `Analysis saved at: \`${analysisPath}\`` : 'Analysis completed (file save failed)')
                 });
-                return;
-              }
-              
-              console.log('✅ Fix applied successfully:', fixResult.diff);
-              
-              // Save analysis for reference
-              let analysisPath = null; // Declare outside try-catch
-              try {
-                const analysisDir = path.join(__dirname, 'analysis');
-                if (!fs.existsSync(analysisDir)) {
-                  fs.mkdirSync(analysisDir, { recursive: true });
-                }
-                analysisPath = path.join(analysisDir, `analysis-${Date.now()}.json`);
-                fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
-              } catch (saveError) {
-                // Fallback location
-                try {
-                  analysisPath = path.join(__dirname, 'tmp', `analysis-${Date.now()}.json`);
-                  fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
-                } catch (fallbackError) {
-                  analysisPath = null;
-                }
-              }
-              // Ensure octokit is initialized before using it
-              if (!octokit) {
-                console.error('Octokit not initialized yet');
-                return;
-              }
-              // Post analysis as comment
-              await octokit.issues.createComment({
-                owner: repo.owner.login,
-                repo: repo.name,
-                issue_number: issue.number,
-                body: `### 🛠️ Error Analysis\n\n` +
-                      `**Error:** \`${errorDetails.error}\`\n` +
-                      `**Root Cause:** ${analysis.aiAnalysis.rootCause}\n` +
-                      `**Confidence:** ${(bestFix.confidence * 100).toFixed(1)}%\n` +
-                      `**Source:** ${bestFix.code}\n\n` +
-                      `**Context:** Analyzed ${analysis.context?.split('===').length - 1 || 1} files\n\n` +
-                      `**Suggested Fix:**\n\n${bestFix.code}\n\n` +
-                      `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
-                      `**Test Impact:** ${analysis.aiAnalysis.testImpact}\n\n` +
-                      (analysis.aiAnalysis.alternatives ? `**Alternative Solutions:**\n${analysis.aiAnalysis.alternatives}\n\n` : '') +
-                      (analysisPath ? `Analysis saved at: \`${analysisPath}\`` : 'Analysis completed (file save failed)')
-              });
-
-              // === Branch, Commit, Push, PR, and Comment Logic ===
-              try {
-                const git = simpleGit(repoPath);
-                await git.fetch();
-                // Checkout staging branch
-                await git.checkout('staging');
-                // Create a new branch for the fix
-                const branchName = `fix/sentry-error-${issue.number}-${Date.now()}`;
-                await git.checkoutLocalBranch(branchName);
-                // Configure git user identity for the temporary repository
-                await git.addConfig('user.email', 'divya@5x.co');
-                await git.addConfig('user.name', 'divyask24');
-                // Apply the fix (already done above, so just add/commit)
+                
+                // Commit the fix
                 await git.add('.');
                 await git.commit(`[Sentry] fix: ${errorDetails.error} - ${errorDetails.file}:${errorDetails.line}`);
+                
                 // Push the branch (with token)
                 const remoteWithToken = `https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`;
                 await git.push(['-u', remoteWithToken, branchName]);
+
                 // Check if a PR already exists for this branch
                 const existingPRs = await octokit.pulls.list({
                   owner: repo.owner.login,
