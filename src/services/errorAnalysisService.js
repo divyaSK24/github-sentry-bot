@@ -185,6 +185,10 @@ Please provide:
     const errorLine = fix.errorLine || 0;
     if (errorLine > 0 && errorLine <= lines.length) {
       console.log('✅ Found exact error line:', errorLine);
+      const problematicLine = lines[errorLine - 1];
+      console.log('Problematic line:', problematicLine);
+      
+      // Return a reasonable context around the error line
       return {
         startLine: Math.max(1, errorLine - 2),
         endLine: Math.min(lines.length, errorLine + 2),
@@ -200,28 +204,25 @@ Please provide:
     }
 
     console.log('🔍 Searching for code pattern in file...');
-    // Find similar code patterns
-    const pattern = this.generateSearchPattern(firstBlock);
-    for (let i = 0; i < lines.length; i++) {
-      if (pattern.test(lines[i])) {
-        console.log('✅ Found matching pattern at line:', i + 1);
-        return {
-          startLine: Math.max(1, i - 2),
-          endLine: Math.min(lines.length, i + 2),
-          context: lines.slice(Math.max(0, i - 2), Math.min(lines.length, i + 2))
-        };
+    // Find similar code patterns - use a more flexible approach
+    const searchLines = firstBlock.split('\n').filter(line => line.trim().length > 0);
+    if (searchLines.length > 0) {
+      // Look for any line that contains the first meaningful line of the fix
+      const firstSearchLine = searchLines[0].trim();
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes(firstSearchLine) || firstSearchLine.includes(lines[i].trim())) {
+          console.log('✅ Found matching pattern at line:', i + 1);
+          return {
+            startLine: Math.max(1, i - 2),
+            endLine: Math.min(lines.length, i + 2),
+            context: lines.slice(Math.max(0, i - 2), Math.min(lines.length, i + 2))
+          };
+        }
       }
     }
 
     console.log('❌ No matching pattern found in file');
     return null;
-  }
-
-  generateSearchPattern(code) {
-    // Create a regex pattern that matches the code structure
-    const lines = code.split('\n');
-    const firstLine = lines[0].trim();
-    return new RegExp(firstLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
   }
 
   applyCodeFix(lines, codeBlocks, location) {
@@ -237,7 +238,7 @@ Please provide:
       console.log('Original lines at location:', lines.slice(location.startLine - 1, location.endLine));
       console.log('New code to insert:', blockLines);
 
-      // Replace the code at the target location
+      // Replace the code at the target location with the fixed version
       newLines.splice(
         location.startLine - 1,
         location.endLine - location.startLine + 1,
