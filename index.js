@@ -643,6 +643,9 @@ app.post('/webhook', async (req, res) => {
                 // Create a new branch for the fix
                 const branchName = `fix/sentry-error-${issue.number}-${Date.now()}`;
                 await git.checkoutLocalBranch(branchName);
+                // Configure git user identity for the temporary repository
+                await git.addConfig('user.email', 'divya@5x.co');
+                await git.addConfig('user.name', 'divyask24');
                 // Apply the fix (already done above, so just add/commit)
                 await git.add('.');
                 await git.commit('fix: apply AI-generated fix for Sentry error');
