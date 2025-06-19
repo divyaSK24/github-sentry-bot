@@ -591,6 +591,39 @@ app.post('/webhook', async (req, res) => {
             
             if (analysis.suggestedFixes.length > 0) {
               console.log('Analysis successful with', analysis.suggestedFixes.length, 'suggested fixes');
+              
+              // Get the highest confidence fix
+              const bestFix = analysis.suggestedFixes[0];
+              
+              // Apply the fix to the file
+              const targetFilePath = path.join(repoPath, errorDetails.file);
+              console.log('Applying fix to file:', targetFilePath);
+              
+              const fixResult = await errorAnalysis.applyFix(targetFilePath, {
+                ...bestFix,
+                errorLine: errorDetails.line,
+                errorFile: errorDetails.file
+              });
+              
+              if (!fixResult || !fixResult.success) {
+                console.log('❌ Fix could not be applied automatically');
+                // Ensure octokit is initialized before using it
+                if (!octokit) {
+                  console.error('Octokit not initialized yet');
+                  return;
+                }
+                
+                await octokit.issues.createComment({
+                  owner: repo.owner.login,
+                  repo: repo.name,
+                  issue_number: issue.number,
+                  body: '❌ The AI-generated fix could not be applied automatically. Please review manually.'
+                });
+                return;
+              }
+              
+              console.log('✅ Fix applied successfully:', fixResult.diff);
+              
               // Save analysis for reference
               let analysisPath = null; // Declare outside try-catch
               try {
@@ -609,8 +642,6 @@ app.post('/webhook', async (req, res) => {
                   analysisPath = null;
                 }
               }
-              // Get the highest confidence fix
-              const bestFix = analysis.suggestedFixes[0];
               // Ensure octokit is initialized before using it
               if (!octokit) {
                 console.error('Octokit not initialized yet');
@@ -625,7 +656,7 @@ app.post('/webhook', async (req, res) => {
                       `**Error:** \`${errorDetails.error}\`\n` +
                       `**Root Cause:** ${analysis.aiAnalysis.rootCause}\n` +
                       `**Confidence:** ${(bestFix.confidence * 100).toFixed(1)}%\n` +
-                      `**Source:** ${bestFix.source}\n\n` +
+                      `**Source:** ${bestFix.code}\n\n` +
                       `**Context:** Analyzed ${analysis.context?.split('===').length - 1 || 1} files\n\n` +
                       `**Suggested Fix:**\n\n${bestFix.code}\n\n` +
                       `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
@@ -648,7 +679,7 @@ app.post('/webhook', async (req, res) => {
                 await git.addConfig('user.name', 'divyask24');
                 // Apply the fix (already done above, so just add/commit)
                 await git.add('.');
-                await git.commit('fix: apply AI-generated fix for Sentry error');
+                await git.commit(`[Sentry] fix: ${errorDetails.error} - ${errorDetails.file}:${errorDetails.line}`);
                 // Push the branch (with token)
                 const remoteWithToken = `https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`;
                 await git.push(['-u', remoteWithToken, branchName]);
