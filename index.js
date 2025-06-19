@@ -591,52 +591,31 @@ app.post('/webhook', async (req, res) => {
             
             if (analysis.suggestedFixes.length > 0) {
               console.log('Analysis successful with', analysis.suggestedFixes.length, 'suggested fixes');
-              
               // Save analysis for reference
               let analysisPath = null; // Declare outside try-catch
               try {
                 const analysisDir = path.join(__dirname, 'analysis');
-                console.log('Analysis directory path:', analysisDir);
-                console.log('Directory exists before check:', fs.existsSync(analysisDir));
-                
                 if (!fs.existsSync(analysisDir)) {
                   fs.mkdirSync(analysisDir, { recursive: true });
-                  console.log('Created analysis directory:', analysisDir);
                 }
-                
                 analysisPath = path.join(analysisDir, `analysis-${Date.now()}.json`);
-                console.log('Attempting to save analysis to:', analysisPath);
-                
-                const analysisData = JSON.stringify(analysis, null, 2);
-                console.log('Analysis data length:', analysisData.length);
-                
-                fs.writeFileSync(analysisPath, analysisData);
-                console.log('✅ Analysis saved successfully to:', analysisPath);
+                fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
               } catch (saveError) {
-                console.error('❌ Failed to save analysis:', saveError.message);
-                console.error('Error details:', saveError);
-                
-                // Try fallback location
+                // Fallback location
                 try {
                   analysisPath = path.join(__dirname, 'tmp', `analysis-${Date.now()}.json`);
-                  console.log('Trying fallback location:', analysisPath);
                   fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2));
-                  console.log('✅ Analysis saved to fallback location:', analysisPath);
                 } catch (fallbackError) {
-                  console.error('❌ Fallback save also failed:', fallbackError.message);
-                  analysisPath = null; // Set to null if both saves fail
+                  analysisPath = null;
                 }
               }
-              
               // Get the highest confidence fix
               const bestFix = analysis.suggestedFixes[0];
-              
               // Ensure octokit is initialized before using it
               if (!octokit) {
                 console.error('Octokit not initialized yet');
                 return;
               }
-              
               // Post analysis as comment
               await octokit.issues.createComment({
                 owner: repo.owner.login,
@@ -648,35 +627,72 @@ app.post('/webhook', async (req, res) => {
                       `**Confidence:** ${(bestFix.confidence * 100).toFixed(1)}%\n` +
                       `**Source:** ${bestFix.source}\n\n` +
                       `**Context:** Analyzed ${analysis.context?.split('===').length - 1 || 1} files\n\n` +
-                      `**Suggested Fix:**\n\`\`\`${bestFix.code}\`\`\`\n\n` +
+                      `**Suggested Fix:**\n\n${bestFix.code}\n\n` +
                       `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
                       `**Test Impact:** ${analysis.aiAnalysis.testImpact}\n\n` +
                       (analysis.aiAnalysis.alternatives ? `**Alternative Solutions:**\n${analysis.aiAnalysis.alternatives}\n\n` : '') +
                       (analysisPath ? `Analysis saved at: \`${analysisPath}\`` : 'Analysis completed (file save failed)')
               });
 
-              // Apply the fix if confidence is high enough
-              if (bestFix.confidence >= 0.8) {
-                // Add error line information to the fix object
-                const fixWithLocation = {
-                  ...bestFix,
-                  errorLine: errorDetails.line,
-                  errorFile: errorDetails.file
-                };
-                
-                const fixApplied = await errorAnalysis.applyFix(
-                  path.join(repoPath, errorDetails.file),
-                  fixWithLocation
-                );
-
-                if (fixApplied) {
-                  console.log('✅ Fix applied successfully');
-                  // Create PR with the fix
-                  // ... existing PR creation logic ...
+              // === Branch, Commit, Push, PR, and Comment Logic ===
+              try {
+                const git = simpleGit(repoPath);
+                await git.fetch();
+                // Checkout staging branch
+                await git.checkout('staging');
+                // Create a new branch for the fix
+                const branchName = `fix/sentry-error-${issue.number}-${Date.now()}`;
+                await git.checkoutLocalBranch(branchName);
+                // Apply the fix (already done above, so just add/commit)
+                await git.add('.');
+                await git.commit('fix: apply AI-generated fix for Sentry error');
+                // Push the branch (with token)
+                const remoteWithToken = `https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`;
+                await git.push(['-u', remoteWithToken, branchName]);
+                // Check if a PR already exists for this branch
+                const existingPRs = await octokit.pulls.list({
+                  owner: repo.owner.login,
+                  repo: repo.name,
+                  state: 'open',
+                  head: `${repo.owner.login}:${branchName}`
+                });
+                let prUrl = null;
+                if (existingPRs.data && existingPRs.data.length > 0) {
+                  prUrl = existingPRs.data[0].html_url;
+                  console.log(`A PR already exists for issue #${issue.number} (branch: ${branchName}).`);
                 } else {
-                  console.log('❌ Fix could not be applied automatically');
+                  // Create a PR to dev branch
+                  const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
+                  const pr = await octokit.pulls.create({
+                    owner: repo.owner.login,
+                    repo: repo.name,
+                    title: prTitle,
+                    head: branchName,
+                    base: 'dev',
+                    body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
+                  });
+                  prUrl = pr.data.html_url;
+                  console.log('PR created successfully:', prUrl);
                 }
+                // Post PR link as a comment on the issue
+                if (prUrl) {
+                  await octokit.issues.createComment({
+                    owner: repo.owner.login,
+                    repo: repo.name,
+                    issue_number: issue.number,
+                    body: `:robot: PR with fix: ${prUrl}`
+                  });
+                }
+              } catch (prError) {
+                console.error('Error during branch/PR/comment workflow:', prError);
+                await octokit.issues.createComment({
+                  owner: repo.owner.login,
+                  repo: repo.name,
+                  issue_number: issue.number,
+                  body: `❌ Error during PR workflow: ${prError.message}`
+                });
               }
+              // === End Branch, Commit, Push, PR, and Comment Logic ===
             } else {
               console.log('No fixes suggested');
               
