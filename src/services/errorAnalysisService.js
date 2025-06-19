@@ -71,21 +71,44 @@ Line: ${errorDetails.line}
 Context:
 ${context}
 
+CRITICAL: You must provide the actual corrected code, not explanations.
+
 Please provide:
 1. Root Cause Analysis
-2. Suggested Fix - IMPORTANT: Provide the actual corrected code in a code block, not just explanation. Include the exact lines that need to be changed with the fix applied.
+2. Suggested Fix - YOU MUST PROVIDE THE ACTUAL CORRECTED CODE IN A CODE BLOCK. Do not explain what to do, provide the exact code that should replace the problematic lines.
+
+Example of what we need:
+\`\`\`javascript
+// The actual corrected code here
+if (res?.status === "SUCCESS") {
+  // rest of the corrected code
+}
+\`\`\`
+
+NOT this:
+"To fix this, you should add a null check..."
+
 3. Test Impact
 4. Confidence Level (0-1)
 5. Alternative Solutions (if any)
 
-For the Suggested Fix, provide the actual corrected code that should replace the problematic lines. Use code blocks (\`\`\`) to format the fix.`;
+REMEMBER: The Suggested Fix must contain actual executable code in a code block, not explanations or suggestions.`;
   }
 
   parseAIResponse(response) {
+    console.log('🤖 Raw AI Response:', response);
+    console.log('📏 Response length:', response.length);
+    
     const sections = response.split('\n\n');
+    console.log('📋 Number of sections:', sections.length);
+    
+    const suggestedFix = sections.find(s => s.includes('Suggested Fix:'))?.replace('Suggested Fix:', '').trim() || '';
+    console.log('🔧 Extracted Suggested Fix:', suggestedFix);
+    console.log('🔧 Fix length:', suggestedFix.length);
+    
     return {
       rootCause: sections.find(s => s.includes('Root Cause:'))?.replace('Root Cause:', '').trim() || 'Unknown',
-      suggestedFix: sections.find(s => s.includes('Suggested Fix:'))?.replace('Suggested Fix:', '').trim() || '',
+      suggestedFix: suggestedFix,
       testImpact: sections.find(s => s.includes('Test Impact:'))?.replace('Test Impact:', '').trim() || 'Unknown',
       confidence: parseFloat(sections.find(s => s.includes('Confidence Level:'))?.match(/\d+\.?\d*/)?.[0] || '0.8'),
       alternatives: sections.find(s => s.includes('Alternative Solutions:'))?.replace('Alternative Solutions:', '').trim() || ''
@@ -161,20 +184,26 @@ For the Suggested Fix, provide the actual corrected code that should replace the
   }
 
   extractCodeBlocks(code) {
+    console.log('🔍 Extracting code blocks from:', code);
+    console.log('📏 Code length:', code.length);
+    
     // Extract code blocks from markdown or plain code
     const codeBlockRegex = /```(?:[a-z]*\n)?([\s\S]*?)```/g;
     const blocks = [];
     let match;
 
     while ((match = codeBlockRegex.exec(code)) !== null) {
+      console.log('✅ Found code block:', match[1].trim());
       blocks.push(match[1].trim());
     }
 
     // If no code blocks found, treat the entire code as one block
     if (blocks.length === 0) {
+      console.log('⚠️  No code blocks found, treating entire code as one block');
       blocks.push(code.trim());
     }
-
+    
+    console.log('📦 Total code blocks extracted:', blocks.length);
     return blocks;
   }
 
