@@ -73,10 +73,12 @@ ${context}
 
 Please provide:
 1. Root Cause Analysis
-2. Suggested Fix (with code)
+2. Suggested Fix - IMPORTANT: Provide the actual corrected code in a code block, not just explanation. Include the exact lines that need to be changed with the fix applied.
 3. Test Impact
 4. Confidence Level (0-1)
-5. Alternative Solutions (if any)`;
+5. Alternative Solutions (if any)
+
+For the Suggested Fix, provide the actual corrected code that should replace the problematic lines. Use code blocks (\`\`\`) to format the fix.`;
   }
 
   parseAIResponse(response) {
