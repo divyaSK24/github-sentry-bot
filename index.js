@@ -609,6 +609,13 @@ app.post('/webhook', async (req, res) => {
                 throw new Error('GITHUB_TOKEN environment variable is not set');
               }
               
+              // Validate token format
+              const token = process.env.GITHUB_TOKEN;
+              if (!token.startsWith('ghp_') && !token.startsWith('gho_')) {
+                console.warn(`⚠️  GITHUB_TOKEN format looks unusual: ${token.substring(0, 10)}...`);
+                console.warn(`   Valid tokens usually start with 'ghp_' or 'gho_'`);
+              }
+              
               // Try multiple authentication methods
               const cloneMethods = [
                 // Method 1: Token in URL (most common)
@@ -634,11 +641,30 @@ app.post('/webhook', async (req, res) => {
                 } catch (error) {
                   console.warn(`Clone method ${i + 1} failed:`, error.message);
                   lastError = error;
+                  
+                  // Provide specific guidance based on error type
+                  if (error.message.includes('could not read Password') || error.message.includes('could not read Username')) {
+                    console.error(`   🔐 Authentication issue detected. Please check your GITHUB_TOKEN.`);
+                    console.error(`   📋 Run 'npm run check-env' to test your token.`);
+                    console.error(`   📖 See AUTHENTICATION_TROUBLESHOOTING.md for help.`);
+                  } else if (error.message.includes('Invalid username or password')) {
+                    console.error(`   🔐 Invalid credentials. Your GITHUB_TOKEN may be expired or incorrect.`);
+                    console.error(`   🔄 Generate a new token at: https://github.com/settings/tokens`);
+                  } else if (error.message.includes('Repository not found')) {
+                    console.error(`   📁 Repository access denied. Check if the token has access to this repository.`);
+                  }
                 }
               }
               
               if (!cloneSuccess) {
-                throw new Error(`All clone methods failed. Last error: ${lastError.message}`);
+                const errorMsg = `All clone methods failed. Last error: ${lastError.message}`;
+                console.error('❌', errorMsg);
+                console.error('🔧 Troubleshooting steps:');
+                console.error('   1. Generate a new GitHub token at: https://github.com/settings/tokens');
+                console.error('   2. Ensure the token has "repo" permissions');
+                console.error('   3. Update your environment variables');
+                console.error('   4. Test with: npm run check-env');
+                throw new Error(errorMsg);
               }
             } catch (cloneError) {
               console.error('Failed to clone repository:', cloneError.message);
