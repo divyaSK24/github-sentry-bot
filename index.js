@@ -202,6 +202,20 @@ function parseSentryDetails(sentryEvent) {
       }
     }
 
+    // Clean up file path - remove node_modules references
+    if (file && file.includes('node_modules/')) {
+      console.warn('⚠️  Error points to node_modules file:', file);
+      // Try to find the actual source file
+      const sourceFile = findSourceFileFromNodeModules(file);
+      if (sourceFile) {
+        console.log('📍 Found source file:', sourceFile);
+        file = sourceFile;
+      } else {
+        console.warn('⚠️  Could not find source file for node_modules error');
+        // Don't return null, let the error analysis continue with the original file
+      }
+    }
+
     // 2. Fallbacks for Java/other events
     if (!file && sentryEvent.culprit) file = sentryEvent.culprit;
     if (!file && sentryEvent.transaction) file = sentryEvent.transaction;
@@ -288,6 +302,71 @@ function parseSentryDetails(sentryEvent) {
       errorFrames: []
     };
   }
+}
+
+// Helper function to find source file from node_modules error
+function findSourceFileFromNodeModules(nodeModulesPath) {
+  try {
+    // Extract the package name from node_modules path
+    const pathParts = nodeModulesPath.split('/');
+    const nodeModulesIndex = pathParts.indexOf('node_modules');
+    
+    if (nodeModulesIndex === -1) return null;
+    
+    const packageName = pathParts[nodeModulesIndex + 1];
+    const relativePath = pathParts.slice(nodeModulesIndex + 2).join('/');
+    
+    console.log('🔍 Analyzing node_modules error:');
+    console.log('   Package:', packageName);
+    console.log('   Relative path:', relativePath);
+    
+    // Common patterns for source file mapping
+    const sourcePatterns = [
+      // Try to find corresponding source files
+      `src/${relativePath}`,
+      `app/${relativePath}`,
+      `components/${relativePath}`,
+      `pages/${relativePath}`,
+      `utils/${relativePath}`,
+      `services/${relativePath}`,
+      // Try without package name
+      relativePath,
+      // Try with different extensions
+      relativePath.replace(/\.js$/, '.ts'),
+      relativePath.replace(/\.js$/, '.tsx'),
+      relativePath.replace(/\.ts$/, '.js'),
+      relativePath.replace(/\.tsx$/, '.jsx')
+    ];
+    
+    // Check if any of these patterns exist
+    for (const pattern of sourcePatterns) {
+      if (fs.existsSync(pattern)) {
+        console.log('✅ Found source file:', pattern);
+        return pattern;
+      }
+    }
+    
+    // If no exact match, try to find files with similar names
+    const fileName = path.basename(relativePath);
+    const fileNameWithoutExt = path.basename(fileName, path.extname(fileName));
+    
+    const searchPattern = `**/${fileNameWithoutExt}*`;
+    const glob = require('glob');
+    const matches = glob.sync(searchPattern, { 
+      ignore: ['**/node_modules/**', '**/dist/**', '**/build/**'],
+      absolute: true 
+    });
+    
+    if (matches.length > 0) {
+      console.log('✅ Found similar source file:', matches[0]);
+      return matches[0];
+    }
+    
+  } catch (error) {
+    console.warn('Error finding source file from node_modules:', error.message);
+  }
+  
+  return null;
 }
 
 function extractSentryEventUrl(issueBody) {

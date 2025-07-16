@@ -127,7 +127,33 @@ Provide the fix in a code block.`;
   async applyFix(filePath, fix) {
     try {
       console.log('🔧 Applying fix to file:', filePath);
-      
+
+      // Validate file path - don't try to fix files in node_modules
+      if (filePath.includes('node_modules/')) {
+        console.warn('⚠️  Skipping fix for node_modules file:', filePath);
+        return {
+          success: false,
+          reason: 'Cannot apply fixes to files in node_modules'
+        };
+      }
+
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        console.warn('⚠️  File does not exist:', filePath);
+        
+        // Try to find the correct file path
+        const alternativePath = this.findAlternativeFilePath(filePath);
+        if (alternativePath && fs.existsSync(alternativePath)) {
+          console.log('📍 Found alternative file path:', alternativePath);
+          return this.applyFix(alternativePath, fix);
+        }
+        
+        return {
+          success: false,
+          reason: `File not found: ${filePath}`
+        };
+      }
+
       // Read the file content
       const content = fs.readFileSync(filePath, 'utf8');
       const lines = content.split('\n');
@@ -157,13 +183,13 @@ Provide the fix in a code block.`;
         // Replace the block in the file content
         const newLines = [...lines];
         newLines.splice(startLine, endLine - startLine, ...aiFix.split('\n'));
-        
+      
         // Write the updated content back to the file
         fs.writeFileSync(filePath, newLines.join('\n'), 'utf8');
         console.log('✅ AI fix applied successfully to file:', filePath);
-        
-        return {
-          success: true,
+      
+      return {
+        success: true,
           diff: changes,
           location: { startLine, endLine }
         };
@@ -181,6 +207,67 @@ Provide the fix in a code block.`;
         reason: error.message
       };
     }
+  }
+
+  findAlternativeFilePath(originalPath) {
+    try {
+      // Extract the file name and extension
+      const fileName = path.basename(originalPath);
+      const fileExt = path.extname(fileName);
+      const fileNameWithoutExt = path.basename(fileName, fileExt);
+      
+      // Common alternative locations to check
+      const alternatives = [
+        // Remove node_modules prefix if present
+        originalPath.replace(/.*node_modules[\/\\]/, ''),
+        // Try src/ directory
+        path.join('src', fileName),
+        // Try components/ directory
+        path.join('src', 'components', fileName),
+        // Try pages/ directory
+        path.join('src', 'pages', fileName),
+        // Try utils/ directory
+        path.join('src', 'utils', fileName),
+        // Try services/ directory
+        path.join('src', 'services', fileName),
+        // Try root directory
+        fileName,
+        // Try with .js extension
+        fileNameWithoutExt + '.js',
+        // Try with .ts extension
+        fileNameWithoutExt + '.ts',
+        // Try with .tsx extension
+        fileNameWithoutExt + '.tsx',
+        // Try with .jsx extension
+        fileNameWithoutExt + '.jsx'
+      ];
+
+      // Check each alternative
+      for (const altPath of alternatives) {
+        if (fs.existsSync(altPath)) {
+          console.log('✅ Found alternative file:', altPath);
+          return altPath;
+        }
+      }
+
+      // If no exact match, try to find files with similar names
+      const searchPattern = `**/${fileNameWithoutExt}*${fileExt}`;
+      const glob = require('glob');
+      const matches = glob.sync(searchPattern, { 
+        ignore: ['**/node_modules/**', '**/dist/**', '**/build/**'],
+        absolute: true 
+      });
+
+      if (matches.length > 0) {
+        console.log('✅ Found similar file:', matches[0]);
+        return matches[0];
+      }
+
+    } catch (error) {
+      console.warn('Error finding alternative file path:', error.message);
+    }
+
+    return null;
   }
 
   checkForCommonIssues(content) {
