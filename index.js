@@ -216,6 +216,20 @@ function parseSentryDetails(sentryEvent) {
       }
     }
 
+    // Clean up file path - handle Next.js build files
+    if (file && (file.includes('_next/') || file.includes('.chunk.') || file.includes('.bundle.'))) {
+      console.warn('⚠️  Error points to Next.js build file:', file);
+      // Try to find the actual source file
+      const sourceFile = findSourceFileFromNextJS(file);
+      if (sourceFile) {
+        console.log('📍 Found source file:', sourceFile);
+        file = sourceFile;
+      } else {
+        console.warn('⚠️  Could not find source file for Next.js build error');
+        // Don't return null, let the error analysis continue with the original file
+      }
+    }
+
     // 2. Fallbacks for Java/other events
     if (!file && sentryEvent.culprit) file = sentryEvent.culprit;
     if (!file && sentryEvent.transaction) file = sentryEvent.transaction;
@@ -367,6 +381,33 @@ function findSourceFileFromNodeModules(nodeModulesPath) {
   }
   
   return null;
+}
+
+function findSourceFileFromNextJS(nextJsPath) {
+  try {
+    // Extract the filename from the path
+    const fileName = path.basename(nextJsPath);
+    const fileNameWithoutExt = path.basename(fileName, path.extname(fileName));
+
+    // Construct a search pattern for the source file
+    const searchPattern = `**/${fileNameWithoutExt}*`;
+
+    // Use glob to find files matching the pattern
+    const matches = glob.sync(searchPattern, {
+      ignore: ['**/node_modules/**', '**/dist/**', '**/build/**'],
+      absolute: true
+    });
+
+    if (matches.length > 0) {
+      console.log('📍 Found source file from Next.js build:', matches[0]);
+      return matches[0];
+    }
+    console.warn('⚠️  Could not find source file for Next.js build error:', nextJsPath);
+    return null;
+  } catch (error) {
+    console.warn('Error finding source file from Next.js build:', error.message);
+    return null;
+  }
 }
 
 function extractSentryEventUrl(issueBody) {

@@ -137,6 +137,15 @@ Provide the fix in a code block.`;
         };
       }
 
+      // Skip build files and generated assets
+      if (this.shouldSkipFile(filePath)) {
+        console.warn('⚠️  Skipping fix for build/generated file:', filePath);
+        return {
+          success: false,
+          reason: 'Cannot apply fixes to build files or generated assets'
+        };
+      }
+
       // Check if file exists
       if (!fs.existsSync(filePath)) {
         console.warn('⚠️  File does not exist:', filePath);
@@ -207,6 +216,100 @@ Provide the fix in a code block.`;
         reason: error.message
       };
     }
+  }
+
+  shouldSkipFile(filePath) {
+    const skipPatterns = [
+      // Build directories
+      /_next\//,
+      /dist\//,
+      /build\//,
+      /\.next\//,
+      /out\//,
+      
+      // Generated files
+      /\.min\.(js|css)$/,
+      /\.bundle\.(js|css)$/,
+      /\.chunk\.(js|css)$/,
+      /\.hash\.[a-f0-9]+\.(js|css)$/,
+      
+      // Static assets
+      /static\//,
+      /assets\//,
+      /public\//,
+      
+      // Cache and temp files
+      /\.cache\//,
+      /\.tmp\//,
+      /\.temp\//,
+      
+      // Package files
+      /package-lock\.json$/,
+      /yarn\.lock$/,
+      /pnpm-lock\.yaml$/,
+      
+      // Config files that shouldn't be modified
+      /\.env$/,
+      /\.env\./,
+      /\.gitignore$/,
+      /\.eslintrc/,
+      /\.prettierrc/,
+      /tsconfig\.json$/,
+      /webpack\.config\./,
+      /next\.config\./,
+      /vite\.config\./,
+      
+      // Generated documentation
+      /README\.md$/,
+      /CHANGELOG\.md$/,
+      /LICENSE$/,
+      
+      // Binary files
+      /\.(png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|mp4|mp3|pdf|zip|tar|gz)$/,
+      
+      // Lock files
+      /\.lock$/,
+      
+      // IDE files
+      /\.vscode\//,
+      /\.idea\//,
+      /\.DS_Store$/,
+      
+      // Test files (usually shouldn't be auto-fixed)
+      /\.test\.(js|ts|jsx|tsx)$/,
+      /\.spec\.(js|ts|jsx|tsx)$/,
+      /__tests__\//,
+      /test\//,
+      /tests\//,
+      
+      // Generated TypeScript declaration files
+      /\.d\.ts$/,
+      
+      // Generated CSS files
+      /\.css$/,
+      /\.scss$/,
+      /\.sass$/,
+      /\.less$/,
+      
+      // Generated HTML files
+      /\.html$/,
+      
+      // Generated JSON files (except package.json)
+      /\.json$/,
+      
+      // Generated YAML files
+      /\.yml$/,
+      /\.yaml$/
+    ];
+
+    for (const pattern of skipPatterns) {
+      if (pattern.test(filePath)) {
+        console.log(`⏭️  Skipping file due to pattern: ${pattern}`);
+        return true;
+      }
+    }
+
+    return false;
   }
 
   findAlternativeFilePath(originalPath) {
