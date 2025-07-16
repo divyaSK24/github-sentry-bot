@@ -7,7 +7,10 @@ A bot that automatically analyzes Sentry errors and suggests fixes for GitHub is
 - Automatically processes GitHub issues with "sentry error" label
 - Fetches Sentry event data and analyzes errors
 - Suggests fixes using AI analysis
-- Posts analysis results as GitHub comments
+- Applies fixes to a temporary repository
+- Creates branches, commits, and pushes changes
+- Creates pull requests to the dev branch
+- Posts analysis results and PR links as GitHub comments
 
 ## Environment Variables
 
@@ -27,14 +30,19 @@ OPENAI_API_KEY=your_openai_api_key_here
 SENTRY_API_TOKEN=your_sentry_api_token_here
 ```
 
-## Deployment
+## GitHub Token Requirements
 
-The application is configured to work with most deployment platforms:
+Your `GITHUB_TOKEN` must have the following permissions:
+- `repo` - Full control of private repositories
+- `issues` - Read and write access to issues
+- `pull_requests` - Read and write access to pull requests
 
-1. **Start Script**: Uses `npm start` to run the application
-2. **Port Binding**: Binds to `0.0.0.0` on the specified port (default: 10000)
-3. **Health Check**: Available at `/health` endpoint
-4. **Procfile**: Included for Heroku and similar platforms
+## Setup
+
+1. Install dependencies: `npm install`
+2. Set environment variables
+3. Test your configuration: `npm run check-env`
+4. Start the server: `npm start`
 
 ## API Endpoints
 
@@ -42,10 +50,20 @@ The application is configured to work with most deployment platforms:
 - `GET /health` - Health check endpoint
 - `POST /webhook` - GitHub webhook endpoint
 
-## Setup
+## Troubleshooting
 
-1. Install dependencies: `npm install`
-2. Set environment variables
-3. Start the server: `npm start`
+### Authentication Issues
+
+If you encounter authentication errors:
+
+1. **Check environment variables**: Run `npm run check-env` to verify all variables are set
+2. **Verify GitHub token**: Ensure your token has the required permissions
+3. **Check token format**: Make sure the token is not truncated or malformed
+
+### Common Error Messages
+
+- `"could not read Username for 'https://github.com'"` - GitHub token authentication issue
+- `"Bad credentials"` - Invalid or expired GitHub token
+- `"GitHub authentication failed"` - Token lacks required permissions
 
 The bot will automatically process GitHub issues when the "sentry error" label is added. 

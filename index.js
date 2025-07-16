@@ -70,11 +70,59 @@ const openai = new OpenAI({
 // Initialize GitHub Octokit client using dynamic import
 let octokit;
 (async () => {
-  const { Octokit } = await import('@octokit/rest');
-  octokit = new Octokit({
-    auth: process.env.GITHUB_TOKEN,
-  });
+  try {
+    const { Octokit } = await import('@octokit/rest');
+    
+    if (!process.env.GITHUB_TOKEN) {
+      console.error('❌ GITHUB_TOKEN environment variable is not set');
+      return;
+    }
+    
+    octokit = new Octokit({
+      auth: process.env.GITHUB_TOKEN,
+    });
+    
+    // Test the authentication
+    try {
+      await octokit.rest.users.getAuthenticated();
+      console.log('✅ GitHub API authentication successful');
+    } catch (authError) {
+      console.error('❌ GitHub API authentication failed:', authError.message);
+      if (authError.status === 401) {
+        console.error('The GITHUB_TOKEN appears to be invalid or expired');
+      }
+    }
+  } catch (error) {
+    console.error('❌ Failed to initialize GitHub Octokit client:', error.message);
+  }
 })();
+
+// Helper function to safely make GitHub API calls
+async function safeGitHubCall(apiCall, errorContext = 'GitHub API call') {
+  if (!octokit) {
+    throw new Error('GitHub Octokit client not initialized');
+  }
+  
+  if (!process.env.GITHUB_TOKEN) {
+    throw new Error('GITHUB_TOKEN environment variable is not set');
+  }
+  
+  try {
+    return await apiCall();
+  } catch (error) {
+    console.error(`❌ ${errorContext} failed:`, error.message);
+    
+    if (error.status === 401) {
+      throw new Error('GitHub authentication failed. Please check your GITHUB_TOKEN.');
+    } else if (error.status === 403) {
+      throw new Error('GitHub API rate limit exceeded or insufficient permissions.');
+    } else if (error.status === 404) {
+      throw new Error('GitHub resource not found. Please check repository and issue details.');
+    } else {
+      throw new Error(`${errorContext} failed: ${error.message}`);
+    }
+  }
+}
 
 // Helper to parse Sentry details from issue body
 function parseSentryDetails(sentryEvent) {
@@ -555,19 +603,42 @@ app.post('/webhook', async (req, res) => {
             console.log('Cloning repository...');
             try {
               const git = simpleGit();
-              // Use the full repository URL from the webhook payload with authentication
-              const repoUrl = `https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`;
-              console.log('Cloning from:', `https://github.com/${repo.owner.login}/${repo.name}.git`);
               
-              try {
-                await git.clone(repoUrl, repoPath);
-                console.log('Repository cloned successfully to:', repoPath);
-              } catch (tokenError) {
-                console.warn('Token-based cloning failed, trying alternative method:', tokenError.message);
-                // Fallback: try with SSH-style URL or public access
-                const fallbackUrl = `https://github.com/${repo.owner.login}/${repo.name}.git`;
-                await git.clone(fallbackUrl, repoPath);
-                console.log('Repository cloned successfully with fallback method to:', repoPath);
+              // Check if GITHUB_TOKEN is available
+              if (!process.env.GITHUB_TOKEN) {
+                throw new Error('GITHUB_TOKEN environment variable is not set');
+              }
+              
+              // Try multiple authentication methods
+              const cloneMethods = [
+                // Method 1: Token in URL (most common)
+                () => git.clone(`https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`, repoPath),
+                
+                // Method 2: Token as username with x-access-token
+                () => git.clone(`https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`, repoPath),
+                
+                // Method 3: Public access (if repository is public)
+                () => git.clone(`https://github.com/${repo.owner.login}/${repo.name}.git`, repoPath)
+              ];
+              
+              let cloneSuccess = false;
+              let lastError = null;
+              
+              for (let i = 0; i < cloneMethods.length; i++) {
+                try {
+                  console.log(`Trying clone method ${i + 1}...`);
+                  await cloneMethods[i]();
+                  console.log(`Repository cloned successfully using method ${i + 1} to:`, repoPath);
+                  cloneSuccess = true;
+                  break;
+                } catch (error) {
+                  console.warn(`Clone method ${i + 1} failed:`, error.message);
+                  lastError = error;
+                }
+              }
+              
+              if (!cloneSuccess) {
+                throw new Error(`All clone methods failed. Last error: ${lastError.message}`);
               }
             } catch (cloneError) {
               console.error('Failed to clone repository:', cloneError.message);
@@ -623,12 +694,15 @@ app.post('/webhook', async (req, res) => {
                 
                 if (!fixResult || !fixResult.success) {
                   console.log('❌ Fix could not be applied on new branch');
-                  await octokit.issues.createComment({
-                    owner: repo.owner.login,
-                    repo: repo.name,
-                    issue_number: issue.number,
-                    body: '❌ The AI-generated fix could not be applied on the new branch. Please review manually.'
-                  });
+                  await safeGitHubCall(
+                    () => octokit.issues.createComment({
+                      owner: repo.owner.login,
+                      repo: repo.name,
+                      issue_number: issue.number,
+                      body: '❌ The AI-generated fix could not be applied on the new branch. Please review manually.'
+                    }),
+                    'Creating comment for failed fix'
+                  );
                   return;
                 }
                 
@@ -660,38 +734,70 @@ app.post('/webhook', async (req, res) => {
                 }
                 
                 // Post analysis as comment
-                await octokit.issues.createComment({
-                  owner: repo.owner.login,
-                  repo: repo.name,
-                  issue_number: issue.number,
-                  body: `### 🛠️ Error Analysis\n\n` +
-                        `**Error:** \`${errorDetails.error}\`\n` +
-                        `**Root Cause:** ${analysis.aiAnalysis.rootCause}\n` +
-                        `**Confidence:** ${(bestFix.confidence * 100).toFixed(1)}%\n` +
-                        `**Source:** ${bestFix.source}\n\n` +
-                        `**Context:** Analyzed ${analysis.context?.split('===').length - 1 || 1} files\n\n` +
-                        `**Suggested Fix:**\n\n${bestFix.code}\n\n` +
-                        `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
-                        `**Test Impact:** ${analysis.aiAnalysis.testImpact}\n\n` +
-                        (analysis.aiAnalysis.alternatives ? `**Alternative Solutions:**\n${analysis.aiAnalysis.alternatives}\n\n` : '') +
-                        (analysisPath ? `Analysis saved at: \`${analysisPath}\`` : 'Analysis completed (file save failed)')
-                });
+                await safeGitHubCall(
+                  () => octokit.issues.createComment({
+                    owner: repo.owner.login,
+                    repo: repo.name,
+                    issue_number: issue.number,
+                    body: `### 🛠️ Error Analysis\n\n` +
+                          `**Error:** \`${errorDetails.error}\`\n` +
+                          `**Root Cause:** ${analysis.aiAnalysis.rootCause}\n` +
+                          `**Confidence:** ${(bestFix.confidence * 100).toFixed(1)}%\n` +
+                          `**Source:** ${bestFix.source}\n\n` +
+                          `**Context:** Analyzed ${analysis.context?.split('===').length - 1 || 1} files\n\n` +
+                          `**Suggested Fix:**\n\n${bestFix.code}\n\n` +
+                          `**Explanation:** ${bestFix.explanation || analysis.aiAnalysis.rootCause}\n\n` +
+                          `**Test Impact:** ${analysis.aiAnalysis.testImpact}\n\n` +
+                          (analysis.aiAnalysis.alternatives ? `**Alternative Solutions:**\n${analysis.aiAnalysis.alternatives}\n\n` : '') +
+                          (analysisPath ? `Analysis saved at: \`${analysisPath}\`` : 'Analysis completed (file save failed)')
+                  }),
+                  'Creating analysis comment'
+                );
                 
                 // Commit the fix
                 await git.add('.');
                 await git.commit(`[Sentry] fix: ${errorDetails.error} - ${errorDetails.file}:${errorDetails.line}`);
                 
-                // Push the branch (with token)
-                const remoteWithToken = `https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`;
-                await git.push(['-u', remoteWithToken, branchName]);
+                // Push the branch with multiple authentication methods
+                console.log('Pushing branch to remote...');
+                const pushMethods = [
+                  // Method 1: Token in URL
+                  () => git.push(['-u', `https://${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`, branchName]),
+                  
+                  // Method 2: Token as username with x-access-token
+                  () => git.push(['-u', `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${repo.owner.login}/${repo.name}.git`, branchName])
+                ];
+                
+                let pushSuccess = false;
+                let pushError = null;
+                
+                for (let i = 0; i < pushMethods.length; i++) {
+                  try {
+                    console.log(`Trying push method ${i + 1}...`);
+                    await pushMethods[i]();
+                    console.log(`Branch pushed successfully using method ${i + 1}`);
+                    pushSuccess = true;
+                    break;
+                  } catch (error) {
+                    console.warn(`Push method ${i + 1} failed:`, error.message);
+                    pushError = error;
+                  }
+                }
+                
+                if (!pushSuccess) {
+                  throw new Error(`Failed to push branch. Last error: ${pushError.message}`);
+                }
 
                 // Check if a PR already exists for this branch
-                const existingPRs = await octokit.pulls.list({
-                  owner: repo.owner.login,
-                  repo: repo.name,
-                  state: 'open',
-                  head: `${repo.owner.login}:${branchName}`
-                });
+                const existingPRs = await safeGitHubCall(
+                  () => octokit.pulls.list({
+                    owner: repo.owner.login,
+                    repo: repo.name,
+                    state: 'open',
+                    head: `${repo.owner.login}:${branchName}`
+                  }),
+                  'Checking for existing PRs'
+                );
                 let prUrl = null;
                 if (existingPRs.data && existingPRs.data.length > 0) {
                   prUrl = existingPRs.data[0].html_url;
@@ -699,34 +805,43 @@ app.post('/webhook', async (req, res) => {
                 } else {
                   // Create a PR to dev branch
                   const prTitle = `[Sentry] Fix: ${issue.title} (#${issue.number})`;
-                  const pr = await octokit.pulls.create({
-                    owner: repo.owner.login,
-                    repo: repo.name,
-                    title: prTitle,
-                    head: branchName,
-                    base: 'dev',
-                    body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
-                  });
+                  const pr = await safeGitHubCall(
+                    () => octokit.pulls.create({
+                      owner: repo.owner.login,
+                      repo: repo.name,
+                      title: prTitle,
+                      head: branchName,
+                      base: 'dev',
+                      body: `This PR applies an AI-generated fix for the Sentry error reported in issue #${issue.number}.\n\nIssue ID: ${issue.id}\nTimestamp: ${Date.now()}`
+                    }),
+                    'Creating pull request'
+                  );
                   prUrl = pr.data.html_url;
                   console.log('PR created successfully:', prUrl);
                 }
                 // Post PR link as a comment on the issue
                 if (prUrl) {
-                  await octokit.issues.createComment({
-                    owner: repo.owner.login,
-                    repo: repo.name,
-                    issue_number: issue.number,
-                    body: `:robot: PR with fix: ${prUrl}`
-                  });
+                  await safeGitHubCall(
+                    () => octokit.issues.createComment({
+                      owner: repo.owner.login,
+                      repo: repo.name,
+                      issue_number: issue.number,
+                      body: `:robot: PR with fix: ${prUrl}`
+                    }),
+                    'Posting PR link comment'
+                  );
                 }
               } catch (prError) {
                 console.error('Error during branch/PR/comment workflow:', prError);
-                await octokit.issues.createComment({
-                  owner: repo.owner.login,
-                  repo: repo.name,
-                  issue_number: issue.number,
-                  body: `❌ Error during PR workflow: ${prError.message}`
-                });
+                await safeGitHubCall(
+                  () => octokit.issues.createComment({
+                    owner: repo.owner.login,
+                    repo: repo.name,
+                    issue_number: issue.number,
+                    body: `❌ Error during PR workflow: ${prError.message}`
+                  }),
+                  'Creating comment for PR workflow error'
+                );
               }
               // === End Branch, Commit, Push, PR, and Comment Logic ===
             } else {
@@ -738,12 +853,15 @@ app.post('/webhook', async (req, res) => {
                 return;
               }
               
-              await octokit.issues.createComment({
-                owner: repo.owner.login,
-                repo: repo.name,
-                issue_number: issue.number,
-                body: '❌ No automatic fixes could be generated for this error. Please review manually.'
-              });
+              await safeGitHubCall(
+                () => octokit.issues.createComment({
+                  owner: repo.owner.login,
+                  repo: repo.name,
+                  issue_number: issue.number,
+                  body: '❌ No automatic fixes could be generated for this error. Please review manually.'
+                }),
+                'Creating comment for no fixes'
+              );
             }
             
             // Clean up: remove temporary repository
@@ -772,12 +890,15 @@ app.post('/webhook', async (req, res) => {
               return;
             }
             
-            await octokit.issues.createComment({
-              owner: repo.owner.login,
-              repo: repo.name,
-              issue_number: issue.number,
-              body: `❌ Error processing the issue: ${error.message}`
-            });
+            await safeGitHubCall(
+              () => octokit.issues.createComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                issue_number: issue.number,
+                body: `❌ Error processing the issue: ${error.message}`
+              }),
+              'Creating comment for error processing'
+            );
           }
         } else {
           console.log('❌ Issue does not have "sentry error" label, ignoring');
@@ -804,9 +925,25 @@ app.listen(PORT, '0.0.0.0', () => {
   const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
   if (missingVars.length > 0) {
     console.warn(`⚠️  Missing environment variables: ${missingVars.join(', ')}`);
+    console.warn(`   Please set these variables before using the bot.`);
+    console.warn(`   Run 'npm run check-env' to test your configuration.`);
   } else {
     console.log('✅ All required environment variables are set');
+    
+    // Additional validation for GitHub token
+    if (process.env.GITHUB_TOKEN) {
+      const token = process.env.GITHUB_TOKEN;
+      if (!token.startsWith('ghp_') && !token.startsWith('gho_')) {
+        console.warn(`⚠️  GITHUB_TOKEN format looks unusual: ${token.substring(0, 10)}...`);
+        console.warn(`   Valid tokens usually start with 'ghp_' or 'gho_'`);
+      }
+    }
   }
+  
+  console.log('\n📋 Quick Troubleshooting:');
+  console.log('   - Run "npm run check-env" to test all API connections');
+  console.log('   - Check AUTHENTICATION_TROUBLESHOOTING.md for help with auth issues');
+  console.log('   - Ensure your GitHub token has repo, issues, and pull_requests permissions');
 });
 
 // Handle uncaught exceptions
